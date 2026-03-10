@@ -55,3 +55,58 @@ class RecognitionFaceModel(Base):
     reviewed_by_operador_id = Column(Integer, nullable=True)
 
     event = relationship("RecognitionEventModel", back_populates="faces")
+
+class PersonaModel(Base):
+    __tablename__ = "persona"
+
+    persona_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    local_id = Column(Integer, nullable=False)
+    codigo_externo = Column(String(100), nullable=True)
+    nombre = Column(String(150), nullable=False)
+    tipo = Column(Enum('socio', 'empleado', 'familia', 'ladron', 'otro'), nullable=False, default='otro')
+    estado = Column(Enum('activo', 'inactivo'), nullable=False, default='activo')
+    fecha_creacion = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    embeddings = relationship("PersonaEmbeddingModel", back_populates="persona")
+
+class PersonaEmbeddingModel(Base):
+    __tablename__ = "persona_embedding"
+
+    persona_embedding_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    persona_id = Column(BigInteger, ForeignKey("persona.persona_id"), nullable=False)
+    engine = Column(Enum('human', 'insightface', 'deepface', 'facenet', 'arcface', 'otro'), nullable=False)
+    model_name = Column(String(100), nullable=True)
+    model_version = Column(String(50), nullable=True)
+    embedding_dim = Column(SmallInteger, nullable=True)
+    embedding = Column(JSON, nullable=False)
+    embedding_hash = Column(String(64), nullable=True)
+    img_origen = Column(String(255), nullable=True)
+    face_box = Column(JSON, nullable=True)
+    perfil = Column(Enum('front', 'left', 'right', 'top', 'undetected'), nullable=False, default='undetected')
+    quality_score = Column(Numeric(10, 6), nullable=True)
+    is_primary = Column(Boolean, nullable=False, default=False)
+    estado = Column(Enum('activo', 'inactivo'), nullable=False, default='activo')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    persona = relationship("PersonaModel", back_populates="embeddings")
+
+class RecognitionEngineResultModel(Base):
+    __tablename__ = "recognition_engine_result"
+
+    recognition_engine_result_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    recognition_face_id = Column(BigInteger, ForeignKey("recognition_face.recognition_face_id"), nullable=False)
+    engine = Column(Enum('human', 'insightface', 'deepface', 'facenet', 'arcface', 'otro'), nullable=False)
+    model_name = Column(String(100), nullable=True)
+    model_version = Column(String(50), nullable=True)
+    detected_human = Column(Boolean, nullable=True)
+    similarity = Column(Numeric(10, 8), nullable=True)
+    candidate_persona_id = Column(BigInteger, ForeignKey("persona.persona_id"), nullable=True)
+    candidate_persona_embedding_id = Column(BigInteger, ForeignKey("persona_embedding.persona_embedding_id"), nullable=True)
+    img = Column(String(255), nullable=True)
+    box = Column(JSON, nullable=True)
+    embedding = Column(JSON, nullable=True)
+    embedding_dim = Column(SmallInteger, nullable=True)
+    embedding_hash = Column(String(64), nullable=True)
+    processing_ms = Column(Integer, nullable=True)
+    raw_response = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

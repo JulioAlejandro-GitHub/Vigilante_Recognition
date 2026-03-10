@@ -4,8 +4,9 @@ from sqlalchemy import select
 from datetime import datetime
 
 from src.repositories.base import BaseRepository
-from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel
+from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel
 from src.core.models.domain import RecognitionJob
+from src.services.recognition.interface import EngineResultContract
 
 class RecognitionRepository:
     """Repositorio para gestionar solicitudes y eventos de reconocimiento en BD"""
@@ -64,5 +65,52 @@ class RecognitionRepository:
         db.commit()
         db.refresh(face)
         return face
+
+    def get_persona_embeddings(self, db: Session) -> List[Dict[str, Any]]:
+        """Obtiene la galería de embeddings de personas activas."""
+        embeddings = db.query(PersonaEmbeddingModel).filter(
+            PersonaEmbeddingModel.estado == 'activo'
+        ).all()
+
+        gallery = []
+        for emb in embeddings:
+            gallery.append({
+                "persona_id": emb.persona_id,
+                "persona_embedding_id": emb.persona_embedding_id,
+                "engine": emb.engine,
+                "embedding": emb.embedding
+            })
+        return gallery
+
+    def save_recognition_engine_result(self, db: Session, face_id: int, result: EngineResultContract) -> RecognitionEngineResultModel:
+        """Guarda el resultado detallado del motor de reconocimiento para un rostro."""
+        engine_result = RecognitionEngineResultModel(
+            recognition_face_id=face_id,
+            engine=result.engine,
+            model_name=result.model_name,
+            model_version=result.model_version,
+            detected_human=result.detected_human,
+            similarity=result.similarity,
+            candidate_persona_id=result.candidate_persona_id,
+            candidate_persona_embedding_id=result.candidate_persona_embedding_id,
+            embedding=result.embedding,
+            embedding_dim=result.embedding_dim,
+            processing_ms=result.processing_ms,
+            raw_response=result.raw_response
+        )
+        db.add(engine_result)
+        db.commit()
+        db.refresh(engine_result)
+        return engine_result
+
+    def update_face_with_best_match(self, db: Session, face_id: int, result: EngineResultContract) -> None:
+        """Actualiza el registro del rostro con la decisión final del orquestador."""
+        face = db.query(RecognitionFaceModel).filter(RecognitionFaceModel.recognition_face_id == face_id).first()
+        if face and result.candidate_persona_id:
+            face.assigned_persona_id = result.candidate_persona_id
+            face.best_similarity = result.similarity
+            face.best_engine = result.engine
+            face.final_label = 'identificado'
+            db.commit()
 
 recognition_repository = RecognitionRepository()

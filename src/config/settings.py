@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", description="Nivel de logs (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
 
+    # Reconocimiento
+    insightface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en InsightFace")
+    insightface_ambiguous_threshold: float = Field(default=0.50, description="Umbral inferior para considerar resultado ambiguo y lanzar DeepFace")
+    deepface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en DeepFace")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

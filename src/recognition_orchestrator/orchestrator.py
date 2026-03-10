@@ -1,5 +1,8 @@
 import threading
 import time
+import os
+import cv2
+import numpy as np
 from typing import Optional
 
 from src.utils.logger import get_logger
@@ -7,6 +10,9 @@ from src.recognition_queue.queue import recognition_queue, RecognitionQueue
 from src.repositories.recognition_repository import recognition_repository
 from src.repositories.camera_repository import camera_repository
 from src.db.session import SessionLocal
+from src.services.recognition.insightface_service import insightface_service
+from src.services.recognition.deepface_service import deepface_service
+from src.config.settings import settings
 
 logger = get_logger(__name__)
 
@@ -20,6 +26,13 @@ class RecognitionOrchestrator(threading.Thread):
         self.queue = queue
         self.running = False
         self.daemon = True # Thread dies when main thread dies
+
+        # Inicializar motores (lazy loading en primer uso es posible, pero es mejor aquí)
+        try:
+            insightface_service.initialize()
+            deepface_service.initialize()
+        except Exception as e:
+            logger.error(f"Error inicializando motores: {e}", exc_info=True)
 
     def stop(self):
         self.running = False
@@ -107,11 +120,88 @@ class RecognitionOrchestrator(threading.Thread):
 
             logger.info(f"Se crearon {face_count} registros de rostros preliminares para el evento {event.recognition_event_id}.")
 
-            # TODO (Stage 4): Invocar engines (InsightFace/DeepFace)
-            # Para cada face_img recortado o pasándole el frame completo,
-            # actualizaríamos `RecognitionFaceModel` y crearíamos `RecognitionEngineResult`.
+            # 4. Obtener galería de la base de datos
+            gallery = recognition_repository.get_persona_embeddings(db)
+            logger.info(f"Galería cargada con {len(gallery)} embeddings.")
 
-            # 4. Marcar solicitud como procesada
+            # Para procesar necesitamos imagen real (usamos un dummy numpy array si no hay archivo para evitar error)
+            # En producción, usaríamos cv2.imread(img_path) u obtener numpy array desde frame_data (bytes)
+            frame_img = None
+            if job.frame_data:
+                np_arr = np.frombuffer(job.frame_data, np.uint8)
+                frame_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            else:
+                # Si no hay data real para test, creamos una vacía, pero fallará la detección
+                frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
+
+            # 5. Invocar engines para cada detección
+            for face_idx, detection in enumerate(detections, start=1):
+                # Extraer bbox
+                box_data = None
+                if isinstance(detection, dict) and 'box' in detection:
+                    box_data = detection['box']
+                elif hasattr(detection, 'xyxy'):
+                    box_data = detection.xyxy[0].tolist()
+
+                # Recuperar el face_id para asociar los resultados
+                face = recognition_repository.create_face(
+                    db=db,
+                    event_id=event.recognition_event_id,
+                    face_index=face_idx,
+                    box=box_data
+                )
+
+                face_id = face.recognition_face_id
+
+                # Recortar el rostro del frame original usando el bbox
+                # Se agrega un margen de seguridad para no recortar la barbilla o frente
+                face_crop = frame_img
+                if box_data and len(box_data) >= 4:
+                    x1, y1, x2, y2 = map(int, box_data[:4])
+                    h, w = frame_img.shape[:2]
+
+                    # Añadir padding del 10%
+                    pad_x = int((x2 - x1) * 0.1)
+                    pad_y = int((y2 - y1) * 0.1)
+
+                    x1 = max(0, x1 - pad_x)
+                    y1 = max(0, y1 - pad_y)
+                    x2 = min(w, x2 + pad_x)
+                    y2 = min(h, y2 + pad_y)
+
+                    if x2 > x1 and y2 > y1:
+                        face_crop = frame_img[y1:y2, x1:x2]
+
+                # Ejecutar InsightFace como motor principal
+                insight_result = insightface_service.process_face(face_crop, gallery)
+                recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
+                logger.info(f"Resultado InsightFace: {insight_result.detected_human}, Similaridad: {insight_result.similarity}")
+
+                final_decision = insight_result
+
+                # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad)
+                # Si detectó un humano pero no superó el threshold alto, y está por encima del bajo, es ambiguo.
+                # O también si InsightFace por alguna razón falló.
+                if insight_result.detected_human and insight_result.similarity is not None:
+                    sim = insight_result.similarity
+                    if settings.insightface_ambiguous_threshold <= sim < settings.insightface_threshold:
+                        logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
+                        deep_result = deepface_service.process_face(face_crop, gallery)
+                        recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
+                        logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
+
+                        # Si DeepFace da mejor confirmación (supera su threshold), sobreescribir la decisión
+                        if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
+                            final_decision = deep_result
+                            logger.info("DeepFace ha confirmado la identidad.")
+                        else:
+                            logger.info("DeepFace tampoco pudo confirmar contundentemente.")
+
+                # Consolidar decisión final en la tabla recognition_face
+                if final_decision.candidate_persona_id:
+                    recognition_repository.update_face_with_best_match(db, face_id, final_decision)
+
+            # 6. Marcar solicitud como procesada
             recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, 'procesada')
 
         finally:
