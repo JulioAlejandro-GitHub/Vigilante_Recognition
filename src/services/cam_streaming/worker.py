@@ -6,6 +6,7 @@ from src.utils.logger import get_logger
 from src.services.yolo_detector.detector import YOLODetector
 from src.services.cam_streaming.rtsp_builder import build_rtsp_url
 from src.core.models.domain import RecognitionJob
+from src.recognition_queue.queue import recognition_queue
 
 logger = get_logger(__name__)
 
@@ -101,11 +102,12 @@ class CameraWorker(threading.Thread):
                             # Generamos candidato para la siguiente etapa
                             job = self._create_recognition_job(frame, detections)
 
-                            # AQUÍ: Se encolaría 'job' a Redis/RabbitMQ o memoria
-                            # Para esta etapa, simulamos el envío loggeando.
-                            logger.debug(f"[{self.camera.nombre}] Job candidato encolado: {job.metadata}")
-
-                            self.last_detection_time = current_time
+                            # Encolamos el job en la cola de reconocimiento
+                            if recognition_queue.put(job, cooldown_seconds=self.detection_cooldown):
+                                logger.debug(f"[{self.camera.nombre}] Job candidato encolado exitosamente.")
+                                self.last_detection_time = current_time
+                            else:
+                                logger.debug(f"[{self.camera.nombre}] Job ignorado o cola llena.")
         finally:
             if self.cap:
                 self.cap.release()
@@ -118,6 +120,8 @@ class CameraWorker(threading.Thread):
 
         return RecognitionJob(
             camera_id=self.camera.camara_id,
+            source_type="camera",
+            source_ref=self.rtsp_url,
             frame_data=frame_bytes,
             timestamp=datetime.utcnow(),
             metadata={

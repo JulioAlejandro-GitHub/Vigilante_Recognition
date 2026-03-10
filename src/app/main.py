@@ -44,17 +44,22 @@ def bootstrap():
 
 def start_streaming_service():
     """
-    Arranca los servicios RTSP y el detector temprano YOLO.
+    Arranca los servicios RTSP, detector temprano YOLO y el orquestador de reconocimiento.
     Lee cámaras directamente de BD.
     """
     from src.services.cam_streaming.manager import streaming_manager
+    from src.recognition_orchestrator.orchestrator import orchestrator
     from src.utils.logger import get_logger
     import time
 
     logger = get_logger(__name__)
-    logger.info(">>> Iniciando Módulo Streaming & Detección YOLO <<<")
+    logger.info(">>> Iniciando Módulo Streaming, Detección YOLO y Orquestador de Reconocimiento <<<")
 
     try:
+        # Arrancar orquestador de reconocimiento (background thread)
+        orchestrator.start()
+
+        # Arrancar streaming de cámaras y workers de detección
         streaming_manager.start_streaming()
 
         # Keep main thread alive as workers run in background threads
@@ -65,6 +70,8 @@ def start_streaming_service():
     except KeyboardInterrupt:
         logger.info("Recibida señal de detención. Apagando workers...")
         streaming_manager.stop_all()
+        orchestrator.stop()
+        orchestrator.join(timeout=3)
 
 if __name__ == "__main__":
     bootstrap()

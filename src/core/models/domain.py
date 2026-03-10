@@ -15,9 +15,12 @@ class CameraConfig:
 class RecognitionJob:
     """Trabajo de reconocimiento enviado a la cola"""
     camera_id: int
-    frame_data: bytes  # Frame codificado (ej. JPEG)
+    source_type: str
+    source_ref: str
     timestamp: datetime
-    metadata: Dict[str, Any]
+    frame_data: Optional[bytes] = None  # Frame codificado (ej. JPEG) o referencia de ruta
+    metadata: Optional[Dict[str, Any]] = None
+    tracking_id: Optional[str] = None
 
 @dataclass
 class EngineResult:
