@@ -4,11 +4,11 @@ from pydantic import ValidationError
 
 def test_settings_successful_initialization(monkeypatch):
     """Test para verificar que las configuraciones de prueba se cargan correctamente."""
-    monkeypatch.setenv("DB_HOST", "localhost")
-    monkeypatch.setenv("DB_PORT", "3306")
-    monkeypatch.setenv("DB_USER", "test_user")
-    monkeypatch.setenv("DB_PASSWORD", "test_pass")
-    monkeypatch.setenv("DB_DATABASE", "test_db")
+    monkeypatch.setenv("db_host", "localhost")
+    monkeypatch.setenv("db_port", "3306")
+    monkeypatch.setenv("db_user", "test_user")
+    monkeypatch.setenv("db_password", "test_pass")
+    monkeypatch.setenv("db_database", "test_db")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
 
     settings = Settings()
