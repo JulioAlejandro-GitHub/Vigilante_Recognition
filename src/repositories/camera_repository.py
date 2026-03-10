@@ -30,6 +30,10 @@ class CamaraRepository(BaseRepository[CamaraModel]):
     def __init__(self):
         super().__init__(CamaraModel)
 
+    def get(self, db: Session, id: int) -> CamaraModel:
+        """Obtiene una cámara por su camara_id"""
+        return db.query(self.model).filter(self.model.camara_id == id).first()
+
     def get_active_cameras(self, db: Session) -> List[CamaraModel]:
         """Obtiene todas las cámaras que están en estado 'Activo'"""
         return db.query(self.model).filter(self.model.estado == 'Activo').all()
