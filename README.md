@@ -43,9 +43,10 @@ Arquitectura fundacional para el sistema de reconocimiento facial orientado a ev
    source .venv/bin/activate
    ```
 
-2. **Instalar dependencias base**
+2. **Instalar dependencias base y de streaming**
    ```bash
    pip install -r requirements/base.txt
+   pip install -r requirements/streaming.txt
    ```
 
 3. **Configuración de Variables de Entorno**
@@ -60,11 +61,12 @@ Arquitectura fundacional para el sistema de reconocimiento facial orientado a ev
    ```bash
    mysql -u tu_usuario -p < Vigilante_v2_configurable.sql
    ```
+   **Nota**: Deberás insertar datos en la tabla `camara` (con `estado = 'Activo'`) para que el módulo de streaming funcione y pueda leer RTSP/Webcams.
 
-5. **Ejecutar el Entrypoint (Bootstrap y Healthcheck)**
-   El entrypoint principal valida la configuración, inicializa los logs y verifica la conexión a la base de datos:
+5. **Ejecutar el Entrypoint (Streaming y YOLO)**
+   El entrypoint principal valida la configuración, inicializa los logs, verifica la conexión a la base de datos y lanza los workers de las cámaras activas para la detección temprana de YOLO:
    ```bash
    python src/app/main.py
    ```
 
-Si todo funciona correctamente, verás en la consola los logs indicando "Bootstrap completado. Arquitectura lista para siguientes fases."
+Al arrancar se intentará conectar a las cámaras configuradas. Si se detecta a una persona (clase 0 de YOLO), se generará un log indicando que se encoló un *Job Candidato*, dejando la arquitectura lista para la etapa de reconocimiento facial.

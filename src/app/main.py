@@ -36,7 +36,35 @@ def bootstrap():
         sys.exit(1)
 
     logger.info("Bootstrap completado. Arquitectura lista para siguientes fases.")
+
+    # Arrancar fase 2: Streaming e Ingesta YOLO
+    start_streaming_service()
+
     return True
+
+def start_streaming_service():
+    """
+    Arranca los servicios RTSP y el detector temprano YOLO.
+    Lee cámaras directamente de BD.
+    """
+    from src.services.cam_streaming.manager import streaming_manager
+    from src.utils.logger import get_logger
+    import time
+
+    logger = get_logger(__name__)
+    logger.info(">>> Iniciando Módulo Streaming & Detección YOLO <<<")
+
+    try:
+        streaming_manager.start_streaming()
+
+        # Keep main thread alive as workers run in background threads
+        logger.info("Aplicación corriendo... Presione Ctrl+C para salir.")
+        while True:
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        logger.info("Recibida señal de detención. Apagando workers...")
+        streaming_manager.stop_all()
 
 if __name__ == "__main__":
     bootstrap()
