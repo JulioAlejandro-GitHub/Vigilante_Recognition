@@ -1,4 +1,5 @@
 import queue
+from typing import Optional
 from src.core.models.domain import RecognitionJob
 from src.utils.logger import get_logger
 
@@ -35,7 +36,7 @@ class RecognitionQueue:
             logger.error(f"La cola de reconocimiento está llena (max={self._queue.maxsize}). Job descartado.")
             return False
 
-    def get(self, timeout: float = 1.0) -> RecognitionJob | None:
+    def get(self, timeout: float = 1.0) -> Optional[RecognitionJob]:
         """
         Obtiene un trabajo de la cola de manera bloqueante con timeout.
         """
