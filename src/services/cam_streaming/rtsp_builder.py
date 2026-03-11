@@ -18,6 +18,8 @@ def build_rtsp_url(camera) -> Optional[str]:
     password = urllib.parse.quote(camera.camara_pass) if camera.camara_pass else ""
     port = camera.camara_port if camera.camara_port else settings.default_rtsp_port
 
+    params = camera.camara_params if camera.camara_params else ""
+
     # En caso de que no tenga usuario/password
     if user:
         credentials = f"{user}:{password}@"
@@ -27,7 +29,10 @@ def build_rtsp_url(camera) -> Optional[str]:
     # Usar lógica de Dahua si el protocolo es "rtsp" u "onvif", u otras condiciones si aplica
     # Según requerimiento:
     # rtspUrl = `rtsp://${encodeURIComponent(camera.camara_user)}:${encodeURIComponent(camera.camara_pass)}@${camera.camara_hostname}:${camera.camara_port}/cam/realmonitor?channel=1&subtype=0`;
+    # camara_params
+    # rtsp_url = f"rtsp://{credentials}{camera.camara_hostname}:{port}/cam/realmonitor?channel=1&subtype=0"
+    rtsp_url = f"rtsp://{credentials}{camera.camara_hostname}:{port}{params}"
 
-    rtsp_url = f"rtsp://{credentials}{camera.camara_hostname}:{port}/cam/realmonitor?channel=1&subtype=0"
+    # /cam/realmonitor?channel=2&subtype=0
 
     return rtsp_url
