@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  vigilante-app:
+    build: .
+    container_name: vigilante_recognition
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Montar datos o frames si es necesario
+      - ./data:/app/data
+    networks:
+      - vigilante_net
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+networks:
+  vigilante_net:
+    driver: bridge

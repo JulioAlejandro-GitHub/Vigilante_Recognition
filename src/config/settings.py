@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO", description="Nivel de logs (DEBUG, INFO, WARNING, ERROR, CRITICAL)")
 
+    # Metricas / Observabilidad
+    enable_healthcheck: bool = Field(default=True, description="Habilita monitor de rendimiento interno")
+
     # Reconocimiento
     insightface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en InsightFace")
     insightface_ambiguous_threshold: float = Field(default=0.50, description="Umbral inferior para considerar resultado ambiguo y lanzar DeepFace")

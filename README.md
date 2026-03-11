@@ -70,3 +70,37 @@ Arquitectura fundacional para el sistema de reconocimiento facial orientado a ev
    ```
 
 Al arrancar se intentará conectar a las cámaras configuradas. Si se detecta a una persona (clase 0 de YOLO), se generará un log indicando que se encoló un *Job Candidato*, dejando la arquitectura lista para la etapa de reconocimiento facial.
+
+## Observabilidad y Estabilidad Operativa
+
+El sistema cuenta con:
+- **Logging Estructurado**: Cada acción en el sistema inyecta información de `camera_id` y `job_id` para trazabilidad exacta en los logs.
+- **Tolerancia a fallos**: Los workers de cámara implementan un backoff exponencial para manejar pérdidas de señal de red RTSP.
+- **Healthchecks**: Un monitor interno (background thread) loguea periódicamente el consumo de CPU, memoria (RSS), hilos vivos y el estado de la cola en memoria.
+- **Transactional Safety**: El orquestador protege la integridad de MySQL haciendo `db.rollback()` ante fallas críticas y cierra la sesión.
+
+## Scripts de Operación
+Para ambientes locales o de test, se recomienda el uso del script de arranque que valida el entorno y configuraciones básicas:
+```bash
+./start.sh
+```
+
+## Docker Compose (Producción)
+Se incluye un `Dockerfile` base optimizado para librerías ML y OpenCV, y un `docker-compose.yml`.
+
+```bash
+# 1. Copia tu .env
+cp .env.example .env
+
+# 2. Levanta el contenedor
+docker-compose up --build -d
+
+# 3. Observa los logs en vivo
+docker-compose logs -f
+```
+
+## Pruebas
+Ejecuta la base mínima de pruebas con pytest desde la raíz del proyecto:
+```bash
+PYTHONPATH=. pytest tests/
+```

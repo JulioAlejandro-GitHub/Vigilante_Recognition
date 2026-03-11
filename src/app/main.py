@@ -49,6 +49,7 @@ def start_streaming_service():
     """
     from src.services.cam_streaming.manager import streaming_manager
     from src.recognition_orchestrator.orchestrator import orchestrator
+    from src.app.health import health_monitor
     from src.utils.logger import get_logger
     import time
 
@@ -56,6 +57,12 @@ def start_streaming_service():
     logger.info(">>> Iniciando Módulo Streaming, Detección YOLO y Orquestador de Reconocimiento <<<")
 
     try:
+        # Arrancar el monitor de salud (background thread)
+        if settings.enable_healthcheck:
+            health_monitor.start()
+        else:
+            logger.info("HealthCheck Monitor está deshabilitado por configuración.")
+
         # Arrancar orquestador de reconocimiento (background thread)
         orchestrator.start()
 
@@ -69,8 +76,11 @@ def start_streaming_service():
 
     except KeyboardInterrupt:
         logger.info("Recibida señal de detención. Apagando workers...")
+        health_monitor.stop()
         streaming_manager.stop_all()
         orchestrator.stop()
+
+        health_monitor.join(timeout=3)
         orchestrator.join(timeout=3)
 
 if __name__ == "__main__":

@@ -46,27 +46,30 @@ class RecognitionOrchestrator(threading.Thread):
             if job is None:
                 continue
 
+            job_id = f"job_{int(job.timestamp.timestamp())}"
+            log_extra = {"camera_id": job.camera_id, "job_id": job_id}
+
             try:
-                self._process_job(job)
+                self._process_job(job, log_extra)
             except Exception as e:
-                logger.error(f"Error procesando job de la cámara {job.camera_id}: {e}", exc_info=True)
+                logger.error(f"Error procesando job: {e}", exc_info=True, extra=log_extra)
             finally:
                 self.queue.task_done()
 
         logger.info("RecognitionOrchestrator detenido.")
 
-    def _process_job(self, job):
+    def _process_job(self, job, log_extra):
         """
         Lógica de procesamiento por job: persistencia y orquestación.
         """
         db = SessionLocal()
         try:
-            logger.info(f"Orquestador procesando job: cámara {job.camera_id}")
+            logger.info(f"Orquestador procesando job...", extra=log_extra)
 
             # Obtener local_id de la cámara para el evento
             camara = camera_repository.get(db, job.camera_id)
             if not camara:
-                logger.warning(f"Cámara {job.camera_id} no encontrada en BD. Ignorando job.")
+                logger.warning(f"Cámara no encontrada en BD. Ignorando job.", extra=log_extra)
                 return
 
             # TODO: Guardar frame_data a disco/S3 y obtener la ruta (simulado por ahora)
@@ -81,7 +84,7 @@ class RecognitionOrchestrator(threading.Thread):
                 job=job,
                 img_path=img_path
             )
-            logger.debug(f"Creada solicitud de reconocimiento ID: {solicitud.id_solicitud}")
+            logger.debug(f"Creada solicitud de reconocimiento ID: {solicitud.id_solicitud}", extra=log_extra)
 
             # 2. Crear Recognition Event
             event = recognition_repository.create_event(
@@ -93,7 +96,7 @@ class RecognitionOrchestrator(threading.Thread):
                 frame_img=img_path,
                 processing_status='ok' # Asumimos OK por ahora, cambiará si no hay rostros luego
             )
-            logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}")
+            logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}", extra=log_extra)
 
             # 3. Crear Recognition Face (Placeholder por cada detección de YOLO)
             detections = job.metadata.get("detections", []) if job.metadata else []
@@ -118,11 +121,11 @@ class RecognitionOrchestrator(threading.Thread):
                 )
                 face_count += 1
 
-            logger.info(f"Se crearon {face_count} registros de rostros preliminares para el evento {event.recognition_event_id}.")
+            logger.info(f"Se crearon {face_count} registros de rostros preliminares para el evento {event.recognition_event_id}.", extra=log_extra)
 
             # 4. Obtener galería de la base de datos
             gallery = recognition_repository.get_persona_embeddings(db)
-            logger.info(f"Galería cargada con {len(gallery)} embeddings.")
+            logger.debug(f"Galería cargada con {len(gallery)} embeddings.", extra=log_extra)
 
             # Para procesar necesitamos imagen real (usamos un dummy numpy array si no hay archivo para evitar error)
             # En producción, usaríamos cv2.imread(img_path) u obtener numpy array desde frame_data (bytes)
@@ -175,7 +178,7 @@ class RecognitionOrchestrator(threading.Thread):
                 # Ejecutar InsightFace como motor principal
                 insight_result = insightface_service.process_face(face_crop, gallery)
                 recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
-                logger.info(f"Resultado InsightFace: {insight_result.detected_human}, Similaridad: {insight_result.similarity}")
+                logger.info(f"Resultado InsightFace: detectado={insight_result.detected_human}, similaridad={insight_result.similarity}", extra=log_extra)
 
                 final_decision = insight_result
 
@@ -185,17 +188,17 @@ class RecognitionOrchestrator(threading.Thread):
                 if insight_result.detected_human and insight_result.similarity is not None:
                     sim = insight_result.similarity
                     if settings.insightface_ambiguous_threshold <= sim < settings.insightface_threshold:
-                        logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
+                        logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...", extra=log_extra)
                         deep_result = deepface_service.process_face(face_crop, gallery)
                         recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
-                        logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
+                        logger.info(f"Resultado DeepFace: detectado={deep_result.detected_human}, similaridad={deep_result.similarity}", extra=log_extra)
 
                         # Si DeepFace da mejor confirmación (supera su threshold), sobreescribir la decisión
                         if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
                             final_decision = deep_result
-                            logger.info("DeepFace ha confirmado la identidad.")
+                            logger.info("DeepFace ha confirmado la identidad.", extra=log_extra)
                         else:
-                            logger.info("DeepFace tampoco pudo confirmar contundentemente.")
+                            logger.info("DeepFace tampoco pudo confirmar contundentemente.", extra=log_extra)
 
                 # Consolidar decisión final en la tabla recognition_face
                 if final_decision.candidate_persona_id:
@@ -204,6 +207,13 @@ class RecognitionOrchestrator(threading.Thread):
             # 6. Marcar solicitud como procesada
             recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, 'procesada')
 
+            # Commit es manejado por el repositorio usualmente, pero si falla algo general:
+            db.commit()
+
+        except Exception as e:
+            logger.error(f"Error en orquestación de DB: {e}", exc_info=True, extra=log_extra)
+            db.rollback()
+            raise
         finally:
             db.close()
 

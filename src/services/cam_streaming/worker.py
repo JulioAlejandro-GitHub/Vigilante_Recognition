@@ -34,84 +34,106 @@ class CameraWorker(threading.Thread):
         self.last_detection_time = 0
         self.detection_cooldown = 2.0  # Cooldown en segundos entre frames útiles enviados
 
+        # Diccionario base para inyectar en logger extra
+        self.log_extra = {"camera_id": self.camera.camara_id}
+
     def connect(self):
         if self.cap is not None:
             self.cap.release()
 
-        logger.info(f"[{self.camera.nombre}] Conectando a stream...")
+        logger.info(f"Conectando a stream... ({self.camera.nombre})", extra=self.log_extra)
         self.cap = cv2.VideoCapture(self.rtsp_url)
 
         if not self.cap.isOpened():
-            logger.error(f"[{self.camera.nombre}] Falló la conexión RTSP: {self.rtsp_url}")
+            logger.error(f"Falló la conexión RTSP: {self.rtsp_url}", extra=self.log_extra)
             return False
 
         # Buffer pequeño si está soportado, o configuraciones específicas de backend
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        logger.info(f"[{self.camera.nombre}] Stream abierto correctamente.")
+        logger.info(f"Stream abierto correctamente. ({self.camera.nombre})", extra=self.log_extra)
         return True
 
     def run(self):
         self.running = True
 
         if not self.rtsp_url:
-            logger.error(f"[{self.camera.nombre}] No tiene RTSP URL válida. Finalizando worker.")
+            logger.error(f"No tiene RTSP URL válida. Finalizando worker. ({self.camera.nombre})", extra=self.log_extra)
             return
 
         reconnect_delay = 5
+        max_reconnect_delay = 60 # Max 1 minute
+        consecutive_failures = 0
 
         try:
             while self.running:
-                if not self.cap or not self.cap.isOpened():
-                    success = self.connect()
-                    if not success:
-                        logger.warning(f"[{self.camera.nombre}] Reintentando en {reconnect_delay} segundos...")
-                        time.sleep(reconnect_delay)
+                try:
+                    if not self.cap or not self.cap.isOpened():
+                        success = self.connect()
+                        if not success:
+                            consecutive_failures += 1
+                            current_delay = min(reconnect_delay * (2 ** (consecutive_failures - 1)), max_reconnect_delay)
+                            logger.warning(f"Reintentando en {current_delay} segundos... ({self.camera.nombre})", extra=self.log_extra)
+                            time.sleep(current_delay)
+                            continue
+                        else:
+                            consecutive_failures = 0
+
+                    # Lectura del frame
+                    ret, frame = self.cap.read()
+
+                    if not ret:
+                        logger.warning(f"Error leyendo frame. Intentando reconectar... ({self.camera.nombre})", extra=self.log_extra)
+                        if self.cap:
+                            self.cap.release()
+                        self.cap = None
+                        consecutive_failures += 1
+                        current_delay = min(reconnect_delay * (2 ** (consecutive_failures - 1)), max_reconnect_delay)
+                        time.sleep(current_delay)
                         continue
+                    else:
+                        consecutive_failures = 0
 
-                # Lectura del frame
-                ret, frame = self.cap.read()
+                    current_time = time.time()
 
-                if not ret:
-                    logger.warning(f"[{self.camera.nombre}] Error leyendo frame. Intentando reconectar...")
-                    self.cap.release()
-                    self.cap = None
-                    time.sleep(reconnect_delay)
-                    continue
+                    # Leemos continuamente lo más rápido posible del buffer de FFMPEG/OpenCV para no generar latencia.
+                    # Solo pasamos a YOLO un frame según el intervalo que decida `self.fps_target`.
 
-                current_time = time.time()
+                    # 1. Filtro FPS: procesar solo un frame por intervalo
+                    if not hasattr(self, 'last_processed_time'):
+                        self.last_processed_time = 0
 
-                # Leemos continuamente lo más rápido posible del buffer de FFMPEG/OpenCV para no generar latencia.
-                # Solo pasamos a YOLO un frame según el intervalo que decida `self.fps_target`.
+                    if current_time - self.last_processed_time >= self.frame_interval:
+                        self.last_processed_time = current_time
 
-                # 1. Filtro FPS: procesar solo un frame por intervalo
-                if not hasattr(self, 'last_processed_time'):
-                    self.last_processed_time = 0
+                        # YOLO detection on sampled frames
+                        # Aplicamos cooldown independiente para no enviar demasiados jobs redundantes de la misma escena a la siguiente etapa
+                        if current_time - self.last_detection_time > self.detection_cooldown:
+                            detections = self.yolo_detector.detect(frame)
 
-                if current_time - self.last_processed_time >= self.frame_interval:
-                    self.last_processed_time = current_time
+                            if self.yolo_detector.is_relevant_frame(detections):
+                                logger.info(f"¡Personas detectadas! ({len(detections)}) ({self.camera.nombre})", extra=self.log_extra)
 
-                    # YOLO detection on sampled frames
-                    # Aplicamos cooldown independiente para no enviar demasiados jobs redundantes de la misma escena a la siguiente etapa
-                    if current_time - self.last_detection_time > self.detection_cooldown:
-                        detections = self.yolo_detector.detect(frame)
+                                # Generamos candidato para la siguiente etapa
+                                job = self._create_recognition_job(frame, detections)
 
-                        if self.yolo_detector.is_relevant_frame(detections):
-                            logger.info(f"[{self.camera.nombre}] ¡Personas detectadas! ({len(detections)})")
+                                # Encolamos el job en la cola de reconocimiento
+                                if recognition_queue.put(job, cooldown_seconds=self.detection_cooldown):
+                                    logger.debug(f"Job candidato encolado exitosamente. ({self.camera.nombre})", extra=self.log_extra)
+                                    self.last_detection_time = current_time
+                                else:
+                                    logger.debug(f"Job ignorado o cola llena. ({self.camera.nombre})", extra=self.log_extra)
 
-                            # Generamos candidato para la siguiente etapa
-                            job = self._create_recognition_job(frame, detections)
+                except Exception as inner_e:
+                    logger.error(f"Error procesando frame en CameraWorker: {inner_e}", exc_info=True, extra=self.log_extra)
+                    time.sleep(1) # Prevenir busy-loop si el error es persistente
 
-                            # Encolamos el job en la cola de reconocimiento
-                            if recognition_queue.put(job, cooldown_seconds=self.detection_cooldown):
-                                logger.debug(f"[{self.camera.nombre}] Job candidato encolado exitosamente.")
-                                self.last_detection_time = current_time
-                            else:
-                                logger.debug(f"[{self.camera.nombre}] Job ignorado o cola llena.")
+        except Exception as e:
+            logger.critical(f"Error fatal y no recuperable en CameraWorker: {e}", exc_info=True, extra=self.log_extra)
         finally:
             if self.cap:
                 self.cap.release()
-                logger.info(f"[{self.camera.nombre}] Worker detenido, recursos liberados.")
+                logger.info(f"Worker detenido, recursos liberados. ({self.camera.nombre})", extra=self.log_extra)
 
     def _create_recognition_job(self, frame, detections) -> RecognitionJob:
         # Encodeamos el frame como JPEG
@@ -132,5 +154,5 @@ class CameraWorker(threading.Thread):
         )
 
     def stop(self):
-        logger.info(f"[{self.camera.nombre}] Solicitando detención del worker...")
+        logger.info(f"Solicitando detención del worker... ({self.camera.nombre})", extra=self.log_extra)
         self.running = False
