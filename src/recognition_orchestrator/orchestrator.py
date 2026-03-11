@@ -60,8 +60,12 @@ class RecognitionOrchestrator(threading.Thread):
         Lógica de procesamiento por job: persistencia y orquestación.
         """
         db = SessionLocal()
+
+        # Inyectar log_context para este thread/job
+        log_context = {"camera_id": job.camera_id}
+        logger.info(f"Orquestador procesando job: cámara {job.camera_id}", extra=log_context)
+
         try:
-            logger.info(f"Orquestador procesando job: cámara {job.camera_id}")
 
             # Obtener local_id de la cámara para el evento
             camara = camera_repository.get(db, job.camera_id)
@@ -204,6 +208,10 @@ class RecognitionOrchestrator(threading.Thread):
             # 6. Marcar solicitud como procesada
             recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, 'procesada')
 
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error procesando el job para la cámara {job.camera_id}: {e}", exc_info=True, extra=log_context)
+            raise e
         finally:
             db.close()
 

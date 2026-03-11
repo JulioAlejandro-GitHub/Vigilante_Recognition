@@ -34,6 +34,9 @@ class CameraWorker(threading.Thread):
         self.last_detection_time = 0
         self.detection_cooldown = 2.0  # Cooldown en segundos entre frames útiles enviados
 
+        # Log Context Helper
+        self.log_context = {"camera_id": self.camera.camara_id}
+
     def connect(self):
         if self.cap is not None:
             self.cap.release()
@@ -55,29 +58,42 @@ class CameraWorker(threading.Thread):
         self.running = True
 
         if not self.rtsp_url:
-            logger.error(f"[{self.camera.nombre}] No tiene RTSP URL válida. Finalizando worker.")
+            logger.error(f"[{self.camera.nombre}] No tiene RTSP URL válida. Finalizando worker.", extra=self.log_context)
             return
 
-        reconnect_delay = 5
+        reconnect_attempts = 0
+        base_reconnect_delay = 2
 
         try:
             while self.running:
                 if not self.cap or not self.cap.isOpened():
                     success = self.connect()
                     if not success:
-                        logger.warning(f"[{self.camera.nombre}] Reintentando en {reconnect_delay} segundos...")
+                        reconnect_delay = min(base_reconnect_delay * (2 ** reconnect_attempts), 60)
+                        logger.warning(f"[{self.camera.nombre}] Reintentando en {reconnect_delay} segundos...", extra=self.log_context)
                         time.sleep(reconnect_delay)
+                        reconnect_attempts += 1
                         continue
+                    else:
+                        reconnect_attempts = 0
 
-                # Lectura del frame
-                ret, frame = self.cap.read()
+                # Lectura del frame con manejo de excepciones por si OpenCV crashea decodificando
+                try:
+                    ret, frame = self.cap.read()
+                except Exception as e:
+                    logger.error(f"[{self.camera.nombre}] Exception leyendo frame: {e}", extra=self.log_context)
+                    ret = False
 
                 if not ret:
-                    logger.warning(f"[{self.camera.nombre}] Error leyendo frame. Intentando reconectar...")
+                    reconnect_delay = min(base_reconnect_delay * (2 ** reconnect_attempts), 60)
+                    logger.warning(f"[{self.camera.nombre}] Error leyendo frame. Intentando reconectar en {reconnect_delay}s...", extra=self.log_context)
                     self.cap.release()
                     self.cap = None
                     time.sleep(reconnect_delay)
+                    reconnect_attempts += 1
                     continue
+                else:
+                    reconnect_attempts = 0
 
                 current_time = time.time()
 

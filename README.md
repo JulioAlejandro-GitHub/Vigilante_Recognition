@@ -43,30 +43,40 @@ Arquitectura fundacional para el sistema de reconocimiento facial orientado a ev
    source .venv/bin/activate
    ```
 
-2. **Instalar dependencias base y de streaming**
-   ```bash
-   pip install -r requirements/base.txt
-   pip install -r requirements/streaming.txt
-   ```
-
-3. **Configuración de Variables de Entorno**
-   Copia `.env.example` a `.env` y configura tus variables de entorno, específicamente las credenciales de la base de datos MySQL:
-   ```bash
-   cp .env.example .env
-   # Edita .env con tus credenciales de MySQL
-   ```
-
-4. **Base de Datos**
+2. **Base de Datos**
    Asegúrate de que tu servicio de MySQL/MariaDB esté activo e inicializa el esquema base:
    ```bash
    mysql -u tu_usuario -p < Vigilante_v2_configurable.sql
    ```
    **Nota**: Deberás insertar datos en la tabla `camara` (con `estado = 'Activo'`) para que el módulo de streaming funcione y pueda leer RTSP/Webcams.
 
-5. **Ejecutar el Entrypoint (Streaming y YOLO)**
-   El entrypoint principal valida la configuración, inicializa los logs, verifica la conexión a la base de datos y lanza los workers de las cámaras activas para la detección temprana de YOLO:
+3. **Ejecutar usando el script de Operaciones (Recomendado)**
+   El script creará el entorno virtual, instalará dependencias, creará tu archivo `.env` base y ejecutará la aplicación de forma segura:
    ```bash
+   ./start.sh
+   ```
+
+   **Opcional: Ejecución manual paso a paso**
+   ```bash
+   # Configurar variables (luego editar credenciales MySQL)
+   cp .env.example .env
+
+   # Activar venv e instalar deps
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements/base.txt
+   pip install -r requirements/streaming.txt
+
+   # Correr app
    python src/app/main.py
    ```
 
-Al arrancar se intentará conectar a las cámaras configuradas. Si se detecta a una persona (clase 0 de YOLO), se generará un log indicando que se encoló un *Job Candidato*, dejando la arquitectura lista para la etapa de reconocimiento facial.
+## Estabilidad y Observabilidad
+Esta versión incluye las siguientes mejoras productivas para facilitar el debugging y la escalabilidad:
+- **Healthchecks**: Un monitor en background vigilará continuamente la conexión DB, la cola de memoria y la salud de los threads RTSP. Configurable vía `ENABLE_HEALTHCHECK` y `HEALTHCHECK_INTERVAL`.
+- **Structured Logging**: Sistema de logs enriquecidos. Errores críticos y eventos relevantes ahora inyectan contexto explícito (ej: `camera_id` o `job_id`) en formato JSON.
+- **Tolerancia a fallos**:
+  - Los Streams RTSP implementan reconexión con "Exponential Backoff" para no saturar el CPU o la red ante caídas.
+  - El Orquestador captura caídas por engine fallido, y realiza rollback seguro a nivel de DB para mantener la integridad relacional de eventos.
+
+Al arrancar se intentará conectar a las cámaras activas configuradas en BD. Las detecciones de YOLO se encolan hacia la etapa de reconocimiento, que evalúa a los candidatos usando InsightFace, y apoya con DeepFace en rangos ambiguos.

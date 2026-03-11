@@ -56,6 +56,11 @@ def start_streaming_service():
     logger.info(">>> Iniciando Módulo Streaming, Detección YOLO y Orquestador de Reconocimiento <<<")
 
     try:
+        # Arrancar health monitor si está habilitado
+        if settings.enable_healthcheck:
+            from src.app.health import health_monitor
+            health_monitor.start()
+
         # Arrancar orquestador de reconocimiento (background thread)
         orchestrator.start()
 
@@ -72,6 +77,9 @@ def start_streaming_service():
         streaming_manager.stop_all()
         orchestrator.stop()
         orchestrator.join(timeout=3)
+        if settings.enable_healthcheck:
+            from src.app.health import health_monitor
+            health_monitor.stop()
 
 if __name__ == "__main__":
     bootstrap()
