@@ -99,30 +99,8 @@ class RecognitionOrchestrator(threading.Thread):
             )
             logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}")
 
-            # 3. Crear Recognition Face (Placeholder por cada detección de YOLO)
+            # 3. Obtener detecciones y galería
             detections = job.metadata.get("detections", []) if job.metadata else []
-            face_count = 0
-
-            # Para la etapa actual, simplemente registramos que hubieron "rostros/personas" detectados
-            # y preparamos la BD para los motores de reconocimiento (InsightFace/DeepFace)
-            for idx, detection in enumerate(detections, start=1):
-                # Extraer bbox si existe en la detección de YOLO
-                box = None
-                if isinstance(detection, dict) and 'box' in detection:
-                    box = detection['box']
-                elif hasattr(detection, 'xyxy'):
-                    # Formato YOLO ultralytics típico
-                    box = {"xyxy": detection.xyxy[0].tolist()}
-
-                face = recognition_repository.create_face(
-                    db=db,
-                    event_id=event.recognition_event_id,
-                    face_index=idx,
-                    box=box
-                )
-                face_count += 1
-
-            logger.info(f"Se crearon {face_count} registros de rostros preliminares para el evento {event.recognition_event_id}.")
 
             # 4. Obtener galería de la base de datos
             gallery = recognition_repository.get_persona_embeddings(db)
@@ -138,7 +116,8 @@ class RecognitionOrchestrator(threading.Thread):
                 # Si no hay data real para test, creamos una vacía, pero fallará la detección
                 frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
 
-            # 5. Invocar engines para cada detección
+            # 5. Crear registro de rostro e invocar engines para cada detección
+            face_count = 0
             for face_idx, detection in enumerate(detections, start=1):
                 # Extraer bbox
                 box_data = None
@@ -204,6 +183,10 @@ class RecognitionOrchestrator(threading.Thread):
                 # Consolidar decisión final en la tabla recognition_face
                 if final_decision.candidate_persona_id:
                     recognition_repository.update_face_with_best_match(db, face_id, final_decision)
+
+                face_count += 1
+
+            logger.info(f"Se crearon {face_count} registros de rostros para el evento {event.recognition_event_id}.")
 
             # 6. Marcar solicitud como procesada
             recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, 'procesada')
