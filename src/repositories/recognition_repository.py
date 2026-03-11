@@ -38,7 +38,7 @@ class RecognitionRepository:
             db.refresh(solicitud)
         return solicitud
 
-    def create_event(self, db: Session, solicitud_id: int, camera_id: int, local_id: int, job: RecognitionJob, frame_img: Optional[str] = None, processing_status: str = ProcessingStatusEnum.OK) -> RecognitionEventModel:
+    def create_event(self, db: Session, solicitud_id: int, camera_id: int, local_id: int, job: RecognitionJob, frame_img: Optional[str] = None, frame_image_url: Optional[str] = None, processing_status: str = ProcessingStatusEnum.OK) -> RecognitionEventModel:
         """Crea un nuevo evento de reconocimiento asociado a una solicitud"""
         event = RecognitionEventModel(
             id_solicitud=solicitud_id,
@@ -46,6 +46,7 @@ class RecognitionRepository:
             local_id=local_id,
             occurred_at=job.timestamp,
             frame_img=frame_img,
+            frame_image_url=frame_image_url,
             frame_metadata=job.metadata,
             source_type=job.source_type,
             processing_status=processing_status
@@ -55,12 +56,27 @@ class RecognitionRepository:
         db.refresh(event)
         return event
 
-    def create_face(self, db: Session, event_id: int, face_index: int = 1, box: Optional[Dict] = None) -> RecognitionFaceModel:
+    def update_event_images(self, db: Session, event_id: int, frame_img: str, frame_image_url: str) -> None:
+        """Actualiza las rutas de imagen del evento después de guardarlas en disco."""
+        event = db.query(RecognitionEventModel).filter(RecognitionEventModel.recognition_event_id == event_id).first()
+        if event:
+            event.frame_img = frame_img
+            event.frame_image_url = frame_image_url
+            db.commit()
+            db.refresh(event)
+
+    def create_face(self, db: Session, event_id: int, face_index: int = 1, box: Optional[Dict] = None,
+                    face_img: Optional[str] = None, face_preview_img: Optional[str] = None,
+                    face_image_url: Optional[str] = None, face_preview_url: Optional[str] = None) -> RecognitionFaceModel:
         """Crea un registro de rostro detectado para un evento"""
         face = RecognitionFaceModel(
             recognition_event_id=event_id,
             face_index=face_index,
-            box=box
+            box=box,
+            face_img=face_img,
+            face_preview_img=face_preview_img,
+            face_image_url=face_image_url,
+            face_preview_url=face_preview_url
         )
         db.add(face)
         db.commit()

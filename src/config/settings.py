@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
-
 class Settings(BaseSettings):
     """
     Configuración centralizada de la aplicación.
@@ -28,6 +27,10 @@ class Settings(BaseSettings):
     insightface_ambiguous_threshold: float = Field(default=0.50, description="Umbral inferior para considerar resultado ambiguo y lanzar DeepFace")
     deepface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en DeepFace")
 
+    # Storage y Media
+    storage_base_path: str = Field(default="storage", description="Directorio base para almacenamiento físico de las imágenes")
+    media_base_url: str = Field(default="/media", description="URL pública base para consumir las imágenes desde UX")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -38,7 +41,6 @@ class Settings(BaseSettings):
     def database_url(self) -> str:
         """Genera la URL de conexión para SQLAlchemy."""
         return f"mysql+pymysql://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_database}"
-
 
 # Instancia global de settings
 settings = Settings()

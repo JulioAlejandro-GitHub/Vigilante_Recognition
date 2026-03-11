@@ -12,6 +12,7 @@ from src.repositories.camera_repository import camera_repository
 from src.db.session import SessionLocal
 from src.services.recognition.insightface_service import insightface_service
 from src.services.recognition.deepface_service import deepface_service
+from src.services.media.storage import storage_service
 from src.config.settings import settings
 from src.core.enums.domain import ProcessingStatusEnum, SolicitudStatusEnum
 
@@ -74,72 +75,72 @@ class RecognitionOrchestrator(threading.Thread):
                 logger.warning(f"Cámara {job.camera_id} no encontrada en BD. Ignorando job.")
                 return
 
-            # TODO: Guardar frame_data a disco/S3 y obtener la ruta (simulado por ahora)
-            img_path = f"data/frames/{job.camera_id}_{int(job.timestamp.timestamp())}.jpg"
+            # Para procesar necesitamos imagen real
+            frame_img = None
             if job.frame_data:
-                # Aquí guardaríamos `job.frame_data` en `img_path`
-                pass
+                np_arr = np.frombuffer(job.frame_data, np.uint8)
+                frame_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if frame_img is None:
+                    logger.error(f"Error al decodificar JPEG para la cámara {job.camera_id}. Frame corrupto o vacío.")
+                    return
+            else:
+                # Si no hay data real para test, creamos una vacía, pero fallará la detección
+                frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
 
-            # 1. Crear Solicitud Recognition
+            # 1. Crear Solicitud Recognition (sin img_path por ahora, se puede actualizar luego)
             solicitud = recognition_repository.create_solicitud(
                 db=db,
                 job=job,
-                img_path=img_path
+                img_path=None
             )
             logger.debug(f"Creada solicitud de reconocimiento ID: {solicitud.id_solicitud}")
 
-            # 2. Crear Recognition Event
+            # 2. Crear Recognition Event (sin imágenes por ahora para obtener el ID)
             event = recognition_repository.create_event(
                 db=db,
                 solicitud_id=solicitud.id_solicitud,
                 camera_id=job.camera_id,
                 local_id=camara.local_id,
                 job=job,
-                frame_img=img_path,
-                processing_status=ProcessingStatusEnum.OK # Asumimos OK por ahora, cambiará si no hay rostros luego
+                frame_img=None,
+                frame_image_url=None,
+                processing_status=ProcessingStatusEnum.OK # Asumimos OK por ahora
             )
             logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}")
 
-            # 3. Obtener detecciones y galería
-            detections = job.metadata.get("detections", []) if job.metadata else []
+            # 3. Guardar el frame full ahora que tenemos el event_id
+            frame_img_path = None
+            frame_img_url = None
+            if frame_img is not None:
+                frame_img_path, frame_img_url = storage_service.save_frame_full(
+                    job.camera_id, event.recognition_event_id, job.timestamp, frame_img
+                )
+                if frame_img_path and frame_img_url:
+                    recognition_repository.update_event_images(db, event.recognition_event_id, frame_img_path, frame_img_url)
 
-            # 4. Obtener galería de la base de datos
+            # Actualizar también la solicitud por compatibilidad
+            if frame_img_path:
+                solicitud.img = frame_img_path
+                db.commit()
+
+            # 4. Obtener detecciones y galería
+            detections = job.metadata.get("detections", []) if job.metadata else []
             gallery = recognition_repository.get_persona_embeddings(db)
             logger.info(f"Galería cargada con {len(gallery)} embeddings.")
-
-            # Para procesar necesitamos imagen real (usamos un dummy numpy array si no hay archivo para evitar error)
-            # En producción, usaríamos cv2.imread(img_path) u obtener numpy array desde frame_data (bytes)
-            frame_img = None
-            if job.frame_data:
-                np_arr = np.frombuffer(job.frame_data, np.uint8)
-                frame_img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            else:
-                # Si no hay data real para test, creamos una vacía, pero fallará la detección
-                frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
 
             # 5. Crear registro de rostro e invocar engines para cada detección
             face_count = 0
             for face_idx, detection in enumerate(detections, start=1):
-                # Extraer bbox
+                # Extraer bbox y unificar 'box' o 'bbox'
                 box_data = None
-                if isinstance(detection, dict) and 'box' in detection:
-                    box_data = detection['box']
+                if isinstance(detection, dict):
+                    box_data = detection.get('box') or detection.get('bbox')
                 elif hasattr(detection, 'xyxy'):
                     box_data = detection.xyxy[0].tolist()
 
-                # Recuperar el face_id para asociar los resultados
-                face = recognition_repository.create_face(
-                    db=db,
-                    event_id=event.recognition_event_id,
-                    face_index=face_idx,
-                    box=box_data
-                )
-
-                face_id = face.recognition_face_id
-
                 # Recortar el rostro del frame original usando el bbox
                 # Se agrega un margen de seguridad para no recortar la barbilla o frente
-                face_crop = frame_img
+                face_crop_img = frame_img
                 if box_data and len(box_data) >= 4:
                     x1, y1, x2, y2 = map(int, box_data[:4])
                     h, w = frame_img.shape[:2]
@@ -154,10 +155,37 @@ class RecognitionOrchestrator(threading.Thread):
                     y2 = min(h, y2 + pad_y)
 
                     if x2 > x1 and y2 > y1:
-                        face_crop = frame_img[y1:y2, x1:x2]
+                        face_crop_img = frame_img[y1:y2, x1:x2]
+
+                # Guardar crops
+                face_img_path = None
+                face_img_url = None
+                face_preview_path = None
+                face_preview_url = None
+
+                if face_crop_img is not None and face_crop_img.size > 0:
+                    face_img_path, face_img_url = storage_service.save_face_crop(
+                        job.camera_id, event.recognition_event_id, face_idx, job.timestamp, face_crop_img
+                    )
+                    face_preview_path, face_preview_url = storage_service.save_face_preview(
+                        job.camera_id, event.recognition_event_id, face_idx, job.timestamp, face_crop_img
+                    )
+
+                # Crear el registro del rostro en la BD
+                face = recognition_repository.create_face(
+                    db=db,
+                    event_id=event.recognition_event_id,
+                    face_index=face_idx,
+                    box=box_data,
+                    face_img=face_img_path,
+                    face_preview_img=face_preview_path,
+                    face_image_url=face_img_url,
+                    face_preview_url=face_preview_url
+                )
+                face_id = face.recognition_face_id
 
                 # Ejecutar InsightFace como motor principal
-                insight_result = insightface_service.process_face(face_crop, gallery)
+                insight_result = insightface_service.process_face(face_crop_img, gallery)
                 recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
                 logger.info(f"Resultado InsightFace: {insight_result.detected_human}, Similaridad: {insight_result.similarity}")
 
@@ -170,7 +198,7 @@ class RecognitionOrchestrator(threading.Thread):
                     sim = insight_result.similarity
                     if settings.insightface_ambiguous_threshold <= sim < settings.insightface_threshold:
                         logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
-                        deep_result = deepface_service.process_face(face_crop, gallery)
+                        deep_result = deepface_service.process_face(face_crop_img, gallery)
                         recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
                         logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
 
