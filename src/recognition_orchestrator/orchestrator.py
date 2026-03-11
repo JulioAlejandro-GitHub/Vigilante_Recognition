@@ -13,6 +13,7 @@ from src.db.session import SessionLocal
 from src.services.recognition.insightface_service import insightface_service
 from src.services.recognition.deepface_service import deepface_service
 from src.config.settings import settings
+from src.core.enums.domain import ProcessingStatusEnum, SolicitudStatusEnum
 
 logger = get_logger(__name__)
 
@@ -95,7 +96,7 @@ class RecognitionOrchestrator(threading.Thread):
                 local_id=camara.local_id,
                 job=job,
                 frame_img=img_path,
-                processing_status='ok' # Asumimos OK por ahora, cambiará si no hay rostros luego
+                processing_status=ProcessingStatusEnum.OK # Asumimos OK por ahora, cambiará si no hay rostros luego
             )
             logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}")
 
@@ -189,7 +190,7 @@ class RecognitionOrchestrator(threading.Thread):
             logger.info(f"Se crearon {face_count} registros de rostros para el evento {event.recognition_event_id}.")
 
             # 6. Marcar solicitud como procesada
-            recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, 'procesada')
+            recognition_repository.update_solicitud_status(db, solicitud.id_solicitud, SolicitudStatusEnum.PROCESADA)
 
         except Exception as e:
             db.rollback()

@@ -7,6 +7,7 @@ from src.repositories.base import BaseRepository
 from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel
 from src.core.models.domain import RecognitionJob
 from src.services.recognition.interface import EngineResultContract
+from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum
 
 class RecognitionRepository:
     """Repositorio para gestionar solicitudes y eventos de reconocimiento en BD"""
@@ -18,7 +19,7 @@ class RecognitionRepository:
             source_type=job.source_type,
             source_ref=job.source_ref,
             img=img_path,
-            status='procesando',
+            status=SolicitudStatusEnum.PROCESANDO,
             requested_at=job.timestamp
         )
         db.add(solicitud)
@@ -31,13 +32,13 @@ class RecognitionRepository:
         solicitud = db.query(SolicitudRecognitionModel).filter(SolicitudRecognitionModel.id_solicitud == solicitud_id).first()
         if solicitud:
             solicitud.status = status
-            if status in ['procesada', 'error']:
+            if status in [SolicitudStatusEnum.PROCESADA, SolicitudStatusEnum.ERROR]:
                 solicitud.processed_at = datetime.utcnow()
             db.commit()
             db.refresh(solicitud)
         return solicitud
 
-    def create_event(self, db: Session, solicitud_id: int, camera_id: int, local_id: int, job: RecognitionJob, frame_img: Optional[str] = None, processing_status: str = 'ok') -> RecognitionEventModel:
+    def create_event(self, db: Session, solicitud_id: int, camera_id: int, local_id: int, job: RecognitionJob, frame_img: Optional[str] = None, processing_status: str = ProcessingStatusEnum.OK) -> RecognitionEventModel:
         """Crea un nuevo evento de reconocimiento asociado a una solicitud"""
         event = RecognitionEventModel(
             id_solicitud=solicitud_id,
@@ -69,7 +70,7 @@ class RecognitionRepository:
     def get_persona_embeddings(self, db: Session) -> List[Dict[str, Any]]:
         """Obtiene la galería de embeddings de personas activas."""
         embeddings = db.query(PersonaEmbeddingModel).filter(
-            PersonaEmbeddingModel.estado == 'activo'
+            PersonaEmbeddingModel.estado == EstadoEnum.ACTIVO
         ).all()
 
         gallery = []
@@ -110,7 +111,7 @@ class RecognitionRepository:
             face.assigned_persona_id = result.candidate_persona_id
             face.best_similarity = result.similarity
             face.best_engine = result.engine
-            face.final_label = 'identificado'
+            face.final_label = FinalLabelEnum.IDENTIFICADO
             db.commit()
 
 recognition_repository = RecognitionRepository()

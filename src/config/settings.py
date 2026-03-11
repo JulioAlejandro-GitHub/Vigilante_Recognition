@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     healthcheck_interval: int = Field(default=60, description="Intervalo en segundos para el healthcheck")
 
     # Reconocimiento
+    default_rtsp_port: int = Field(default=554, description="Puerto RTSP por defecto a usar si la cámara no lo especifica")
     insightface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en InsightFace")
     insightface_ambiguous_threshold: float = Field(default=0.50, description="Umbral inferior para considerar resultado ambiguo y lanzar DeepFace")
     deepface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en DeepFace")

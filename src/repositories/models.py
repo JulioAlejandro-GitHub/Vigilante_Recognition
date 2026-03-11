@@ -1,4 +1,9 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, SmallInteger, Enum, BigInteger, JSON, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, SmallInteger, Enum as SQLEnum, BigInteger, JSON, ForeignKey, Numeric
+from src.core.enums.domain import (
+    SourceTypeEnum, SolicitudStatusEnum, ProcessingStatusEnum, PerfilEnum,
+    FinalLabelEnum, EstadoValidacionEnum, AssignedStatusEnum, EngineEnum,
+    PersonaTipoEnum, EstadoEnum
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from src.db.session import Base
@@ -8,11 +13,11 @@ class SolicitudRecognitionModel(Base):
 
     id_solicitud = Column(BigInteger, primary_key=True, autoincrement=True)
     camera_id = Column(Integer, ForeignKey("camara.camara_id"), nullable=True)
-    source_type = Column(Enum('camera', 'video_file', 'dvr', 'upload', 'api'), nullable=False, default='camera')
+    source_type = Column(SQLEnum(SourceTypeEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=SourceTypeEnum.CAMERA)
     source_ref = Column(String(500), nullable=True)
     img = Column(String(255), nullable=True)
     sharp_ok = Column(Boolean, nullable=True)
-    status = Column(Enum('pendiente', 'procesando', 'procesada', 'error'), nullable=False, default='pendiente')
+    status = Column(SQLEnum(SolicitudStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=SolicitudStatusEnum.PENDIENTE)
     requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
 
@@ -28,8 +33,8 @@ class RecognitionEventModel(Base):
     occurred_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     frame_img = Column(String(255), nullable=True)
     frame_metadata = Column(JSON, nullable=True)
-    source_type = Column(Enum('camera', 'video_file', 'dvr', 'upload', 'api'), nullable=False, default='camera')
-    processing_status = Column(Enum('ok', 'sin_rostro', 'error'), nullable=False, default='ok')
+    source_type = Column(SQLEnum(SourceTypeEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=SourceTypeEnum.CAMERA)
+    processing_status = Column(SQLEnum(ProcessingStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=ProcessingStatusEnum.OK)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     solicitud = relationship("SolicitudRecognitionModel", back_populates="events")
@@ -43,15 +48,15 @@ class RecognitionFaceModel(Base):
     face_index = Column(SmallInteger, nullable=False, default=1)
     face_img = Column(String(255), nullable=True)
     box = Column(JSON, nullable=True)
-    perfil = Column(Enum('front', 'left', 'right', 'top', 'undetected'), nullable=False, default='undetected')
+    perfil = Column(SQLEnum(PerfilEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=PerfilEnum.UNDETECTED)
     quality_score = Column(Numeric(10, 6), nullable=True)
     human_score = Column(Numeric(10, 6), nullable=True)
-    final_label = Column(Enum('desconocido', 'identificado', 'ladron', 'rechazado', 'revisar'), nullable=False, default='desconocido')
-    estado_validacion = Column(Enum('valido', 'por_validar', 'invalido'), nullable=False, default='por_validar')
+    final_label = Column(SQLEnum(FinalLabelEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=FinalLabelEnum.DESCONOCIDO)
+    estado_validacion = Column(SQLEnum(EstadoValidacionEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=EstadoValidacionEnum.POR_VALIDAR)
     assigned_persona_id = Column(BigInteger, nullable=True)
-    assigned_status = Column(Enum('sin_asignar', 'auto_asignado', 'manual_asignado', 'enrolado_desde_evento'), nullable=False, default='sin_asignar')
+    assigned_status = Column(SQLEnum(AssignedStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=AssignedStatusEnum.SIN_ASIGNAR)
     best_similarity = Column(Numeric(10, 8), nullable=True)
-    best_engine = Column(Enum('human', 'insightface', 'deepface', 'facenet', 'arcface', 'otro'), nullable=True)
+    best_engine = Column(SQLEnum(EngineEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=True)
     reviewed_by_operador_id = Column(Integer, nullable=True)
 
     event = relationship("RecognitionEventModel", back_populates="faces")
@@ -63,8 +68,8 @@ class PersonaModel(Base):
     local_id = Column(Integer, nullable=False)
     codigo_externo = Column(String(100), nullable=True)
     nombre = Column(String(150), nullable=False)
-    tipo = Column(Enum('socio', 'empleado', 'familia', 'ladron', 'otro'), nullable=False, default='otro')
-    estado = Column(Enum('activo', 'inactivo'), nullable=False, default='activo')
+    tipo = Column(SQLEnum(PersonaTipoEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=PersonaTipoEnum.OTRO)
+    estado = Column(SQLEnum(EstadoEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=EstadoEnum.ACTIVO)
     fecha_creacion = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     embeddings = relationship("PersonaEmbeddingModel", back_populates="persona")
@@ -74,7 +79,7 @@ class PersonaEmbeddingModel(Base):
 
     persona_embedding_id = Column(BigInteger, primary_key=True, autoincrement=True)
     persona_id = Column(BigInteger, ForeignKey("persona.persona_id"), nullable=False)
-    engine = Column(Enum('human', 'insightface', 'deepface', 'facenet', 'arcface', 'otro'), nullable=False)
+    engine = Column(SQLEnum(EngineEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     model_name = Column(String(100), nullable=True)
     model_version = Column(String(50), nullable=True)
     embedding_dim = Column(SmallInteger, nullable=True)
@@ -82,10 +87,10 @@ class PersonaEmbeddingModel(Base):
     embedding_hash = Column(String(64), nullable=True)
     img_origen = Column(String(255), nullable=True)
     face_box = Column(JSON, nullable=True)
-    perfil = Column(Enum('front', 'left', 'right', 'top', 'undetected'), nullable=False, default='undetected')
+    perfil = Column(SQLEnum(PerfilEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=PerfilEnum.UNDETECTED)
     quality_score = Column(Numeric(10, 6), nullable=True)
     is_primary = Column(Boolean, nullable=False, default=False)
-    estado = Column(Enum('activo', 'inactivo'), nullable=False, default='activo')
+    estado = Column(SQLEnum(EstadoEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=EstadoEnum.ACTIVO)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     persona = relationship("PersonaModel", back_populates="embeddings")
@@ -95,7 +100,7 @@ class RecognitionEngineResultModel(Base):
 
     recognition_engine_result_id = Column(BigInteger, primary_key=True, autoincrement=True)
     recognition_face_id = Column(BigInteger, ForeignKey("recognition_face.recognition_face_id"), nullable=False)
-    engine = Column(Enum('human', 'insightface', 'deepface', 'facenet', 'arcface', 'otro'), nullable=False)
+    engine = Column(SQLEnum(EngineEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
     model_name = Column(String(100), nullable=True)
     model_version = Column(String(50), nullable=True)
     detected_human = Column(Boolean, nullable=True)

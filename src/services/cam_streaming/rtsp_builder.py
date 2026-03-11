@@ -1,5 +1,6 @@
 import urllib.parse
 from typing import Optional
+from src.config.settings import settings
 
 def build_rtsp_url(camera) -> Optional[str]:
     """
@@ -15,7 +16,7 @@ def build_rtsp_url(camera) -> Optional[str]:
     # URL encoding de credenciales según la petición
     user = urllib.parse.quote(camera.camara_user) if camera.camara_user else ""
     password = urllib.parse.quote(camera.camara_pass) if camera.camara_pass else ""
-    port = camera.camara_port if camera.camara_port else 554
+    port = camera.camara_port if camera.camara_port else settings.default_rtsp_port
 
     # En caso de que no tenga usuario/password
     if user:

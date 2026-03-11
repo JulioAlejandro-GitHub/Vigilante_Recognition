@@ -6,6 +6,7 @@ from src.utils.logger import get_logger
 from src.services.yolo_detector.detector import YOLODetector
 from src.services.cam_streaming.rtsp_builder import build_rtsp_url
 from src.core.models.domain import RecognitionJob
+from src.core.enums.domain import SourceTypeEnum
 from src.recognition_queue.queue import recognition_queue
 
 logger = get_logger(__name__)
@@ -136,7 +137,7 @@ class CameraWorker(threading.Thread):
 
         return RecognitionJob(
             camera_id=self.camera.camara_id,
-            source_type="camera",
+            source_type=SourceTypeEnum.CAMERA.value,
             source_ref=self.rtsp_url,
             frame_data=frame_bytes,
             timestamp=datetime.utcnow(),
