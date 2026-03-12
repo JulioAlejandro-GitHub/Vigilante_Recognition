@@ -487,6 +487,13 @@ ADD COLUMN face_preview_img VARCHAR(255) DEFAULT NULL AFTER face_img,
 ADD COLUMN face_image_url VARCHAR(255) DEFAULT NULL AFTER face_preview_img,
 ADD COLUMN face_preview_url VARCHAR(255) DEFAULT NULL AFTER face_image_url;
 
+ALTER TABLE recognition_event
+    MODIFY COLUMN frame_image_url VARCHAR(1024) DEFAULT NULL;
+
+ALTER TABLE recognition_face
+    MODIFY COLUMN face_image_url    VARCHAR(1024) DEFAULT NULL,
+    MODIFY COLUMN face_preview_url  VARCHAR(1024) DEFAULT NULL;
+
 
 
 -- =========================================================
