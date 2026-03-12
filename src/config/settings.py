@@ -28,8 +28,12 @@ class Settings(BaseSettings):
     deepface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en DeepFace")
 
     # Storage y Media
-    storage_base_path: str = Field(default="storage", description="Directorio base para almacenamiento físico de las imágenes")
-    media_base_url: str = Field(default="/media", description="URL pública base para consumir las imágenes desde UX")
+    storage_enabled: bool = Field(default=True, description="Habilitar subida de media a Storage Service")
+    storage_service_base_url: str = Field(default="http://localhost:8000", description="URL base de Vigilante Storage")
+    storage_upload_timeout_seconds: int = Field(default=10, description="Timeout en segundos para uploads HTTP")
+    storage_source_service: str = Field(default="recognition_service_1", description="Identificador del servicio que envía la media")
+    storage_base_path: str = Field(default="storage", description="Directorio base transitorio o legacy para media")
+    media_base_url: str = Field(default="/media", description="URL pública base legacy")
 
     model_config = SettingsConfigDict(
         env_file=".env",

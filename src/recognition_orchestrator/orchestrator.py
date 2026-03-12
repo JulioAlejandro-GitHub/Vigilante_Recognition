@@ -112,13 +112,15 @@ class RecognitionOrchestrator(threading.Thread):
             frame_img_path = None
             frame_img_url = None
             if frame_img is not None:
+                # storage_service ahora devuelve (object_key, public_url)
                 frame_img_path, frame_img_url = storage_service.save_frame_full(
                     job.camera_id, event.recognition_event_id, job.timestamp, frame_img
                 )
-                if frame_img_path and frame_img_url:
+                if frame_img_url:
+                    # Usamos el object_key (frame_img_path) para compatibilidad con img/frame_img
                     recognition_repository.update_event_images(db, event.recognition_event_id, frame_img_path, frame_img_url)
 
-            # Actualizar también la solicitud por compatibilidad
+            # Actualizar también la solicitud por compatibilidad (legacy path o key object)
             if frame_img_path:
                 solicitud.img = frame_img_path
                 db.commit()

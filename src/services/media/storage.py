@@ -1,85 +1,86 @@
-import os
 import cv2
 import numpy as np
 from datetime import datetime
-from src.config.settings import settings
 from src.utils.logger import get_logger
+from src.services.media.storage_client import storage_client
 
 logger = get_logger(__name__)
 
 class StorageService:
     def __init__(self):
-        self.base_path = settings.storage_base_path
-        self.base_url = settings.media_base_url
+        pass
 
-    def _build_path(self, camera_id: int, event_id: int, dt: datetime, filename: str) -> str:
-        """Construye la ruta relativa para un archivo en particular."""
-        return f"recognition/cameras/{camera_id}/{dt.year:04d}/{dt.month:02d}/{dt.day:02d}/event_{event_id}/{filename}"
-
-    def _get_absolute_path(self, relative_path: str) -> str:
-        """Obtiene la ruta absoluta en el sistema de archivos."""
-        return os.path.join(self.base_path, relative_path)
-
-    def _get_public_url(self, relative_path: str) -> str:
-        """Genera la URL pública para acceder a la imagen."""
-        # Se elimina posibles dobles slashes
-        return f"{self.base_url.rstrip('/')}/{relative_path}"
-
-    def _ensure_dir(self, file_path: str):
-        """Asegura que el directorio exista."""
-        dir_path = os.path.dirname(file_path)
-        os.makedirs(dir_path, exist_ok=True)
-
-    def _save_image(self, img_array: np.ndarray, file_path: str) -> bool:
-        """Guarda un array numpy como imagen de forma segura."""
+    def _encode_image(self, img_array: np.ndarray) -> bytes:
+        """Codifica un array numpy como imagen JPEG en memoria."""
         if img_array is None or img_array.size == 0:
-            logger.error(f"Intento de guardar imagen vacía en {file_path}")
-            return False
+            logger.error("Intento de codificar imagen vacía")
+            return None
 
         try:
-            self._ensure_dir(file_path)
-            success = cv2.imwrite(file_path, img_array)
+            success, buffer = cv2.imencode(".jpg", img_array)
             if not success:
-                logger.error(f"Error cv2.imwrite guardando archivo en {file_path}")
-                return False
-            logger.debug(f"Imagen guardada exitosamente en {file_path}")
-            return True
+                logger.error("Error cv2.imencode codificando imagen")
+                return None
+            return buffer.tobytes()
         except Exception as e:
-            logger.error(f"Excepción guardando imagen en {file_path}: {e}")
-            return False
+            logger.error(f"Excepción codificando imagen: {e}")
+            return None
 
     def save_frame_full(self, camera_id: int, event_id: int, timestamp: datetime, frame_img: np.ndarray) -> tuple[str, str]:
         """
-        Guarda la imagen completa del frame original.
-        Retorna (ruta_fisica_relativa, url_publica) o (None, None) si falla.
+        Sube la imagen completa del frame original al Storage Service.
+        Retorna (object_key, public_url) o (None, None) si falla.
         """
-        rel_path = self._build_path(camera_id, event_id, timestamp, "frame_full.jpg")
-        abs_path = self._get_absolute_path(rel_path)
+        img_bytes = self._encode_image(frame_img)
+        if not img_bytes:
+            return None, None
 
-        if self._save_image(frame_img, abs_path):
-            public_url = self._get_public_url(rel_path)
-            logger.info(f"Guardado frame_full: {public_url}")
-            return rel_path, public_url
+        response = storage_client.upload_image(
+            image_bytes=img_bytes,
+            image_kind="frame_full",
+            filename="frame_full.jpg",
+            camera_id=camera_id,
+            recognition_event_id=event_id
+        )
+
+        if response and response.get("public_url"):
+            public_url = response.get("public_url")
+            object_key = response.get("object_key", "")
+            logger.info(f"Subido frame_full: {public_url}")
+            return object_key, public_url
+
         return None, None
 
     def save_face_crop(self, camera_id: int, event_id: int, face_index: int, timestamp: datetime, face_img: np.ndarray) -> tuple[str, str]:
         """
-        Guarda el recorte del rostro.
-        Retorna (ruta_fisica_relativa, url_publica) o (None, None) si falla.
+        Sube el recorte del rostro al Storage Service.
+        Retorna (object_key, public_url) o (None, None) si falla.
         """
-        rel_path = self._build_path(camera_id, event_id, timestamp, f"face_{face_index}.jpg")
-        abs_path = self._get_absolute_path(rel_path)
+        img_bytes = self._encode_image(face_img)
+        if not img_bytes:
+            return None, None
 
-        if self._save_image(face_img, abs_path):
-            public_url = self._get_public_url(rel_path)
-            logger.info(f"Guardado face_crop {face_index}: {public_url}")
-            return rel_path, public_url
+        response = storage_client.upload_image(
+            image_bytes=img_bytes,
+            image_kind="face_crop",
+            filename=f"face_{face_index}.jpg",
+            camera_id=camera_id,
+            recognition_event_id=event_id,
+            face_index=face_index
+        )
+
+        if response and response.get("public_url"):
+            public_url = response.get("public_url")
+            object_key = response.get("object_key", "")
+            logger.info(f"Subido face_crop {face_index}: {public_url}")
+            return object_key, public_url
+
         return None, None
 
     def save_face_preview(self, camera_id: int, event_id: int, face_index: int, timestamp: datetime, face_img: np.ndarray, max_size: int = 150) -> tuple[str, str]:
         """
-        Guarda una versión ligera del recorte del rostro para UX.
-        Retorna (ruta_fisica_relativa, url_publica) o (None, None) si falla.
+        Sube una versión ligera del recorte del rostro para UX al Storage Service.
+        Retorna (object_key, public_url) o (None, None) si falla.
         """
         if face_img is None or face_img.size == 0:
             return None, None
@@ -93,13 +94,25 @@ class StorageService:
         else:
             preview_img = face_img
 
-        rel_path = self._build_path(camera_id, event_id, timestamp, f"face_{face_index}_preview.jpg")
-        abs_path = self._get_absolute_path(rel_path)
+        img_bytes = self._encode_image(preview_img)
+        if not img_bytes:
+            return None, None
 
-        if self._save_image(preview_img, abs_path):
-            public_url = self._get_public_url(rel_path)
-            logger.info(f"Guardado face_preview {face_index}: {public_url}")
-            return rel_path, public_url
+        response = storage_client.upload_image(
+            image_bytes=img_bytes,
+            image_kind="face_preview",
+            filename=f"face_{face_index}_preview.jpg",
+            camera_id=camera_id,
+            recognition_event_id=event_id,
+            face_index=face_index
+        )
+
+        if response and response.get("public_url"):
+            public_url = response.get("public_url")
+            object_key = response.get("object_key", "")
+            logger.info(f"Subido face_preview {face_index}: {public_url}")
+            return object_key, public_url
+
         return None, None
 
 storage_service = StorageService()
