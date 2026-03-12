@@ -85,7 +85,9 @@ class RecognitionOrchestrator(threading.Thread):
                     return
             else:
                 # Si no hay data real para test, creamos una vacía, pero fallará la detección
-                frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
+                # frame_img = np.zeros((640, 640, 3), dtype=np.uint8)
+                logger.error(f"Error al decodificar JPEG para la cámara {job.camera_id}. Frame corrupto o vacío 2.")
+                return
 
             # 1. Crear Solicitud Recognition (sin img_path por ahora, se puede actualizar luego)
             solicitud = recognition_repository.create_solicitud(
