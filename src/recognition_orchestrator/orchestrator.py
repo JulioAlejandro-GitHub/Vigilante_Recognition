@@ -127,10 +127,10 @@ class RecognitionOrchestrator(threading.Thread):
                 solicitud.img = frame_img_path
                 db.commit()
 
-            # 4. Obtener detecciones y galería
+            # 4. Obtener detecciones y galería combinada
             detections = job.metadata.get("detections", []) if job.metadata else []
-            gallery = recognition_repository.get_persona_embeddings(db)
-            logger.info(f"Galería cargada con {len(gallery)} embeddings.")
+            gallery = recognition_repository.get_combined_embeddings(db)
+            logger.info(f"Galería combinada cargada con {len(gallery)} embeddings.")
 
             # 5. Crear registro de rostro e invocar engines para cada detección
             face_count = 0
@@ -196,26 +196,64 @@ class RecognitionOrchestrator(threading.Thread):
                 final_decision = insight_result
 
                 # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad)
-                # Si detectó un humano pero no superó el threshold alto, y está por encima del bajo, es ambiguo.
-                # O también si InsightFace por alguna razón falló.
                 if insight_result.detected_human and insight_result.similarity is not None:
                     sim = insight_result.similarity
-                    if settings.insightface_ambiguous_threshold <= sim < settings.insightface_threshold:
+                    if settings.insightface_ambiguous_threshold <= sim < settings.known_person_threshold:
                         logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
                         deep_result = deepface_service.process_face(face_crop_img, gallery)
                         recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
                         logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
 
-                        # Si DeepFace da mejor confirmación (supera su threshold), sobreescribir la decisión
                         if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
                             final_decision = deep_result
                             logger.info("DeepFace ha confirmado la identidad.")
                         else:
                             logger.info("DeepFace tampoco pudo confirmar contundentemente.")
 
-                # Consolidar decisión final en la tabla recognition_face
-                if final_decision.candidate_persona_id:
-                    recognition_repository.update_face_with_best_match(db, face_id, final_decision)
+                # Reglas de decisión:
+                # 1. Match con persona conocida
+                match_known = False
+                match_observed = False
+
+                # Check known
+                if final_decision.candidate_persona_id and final_decision.raw_response and \
+                   final_decision.raw_response.get("sim_persona", 0) >= settings.known_person_threshold:
+                    match_known = True
+                    logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id}")
+                    recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
+
+                # 2. Match con identidad observada
+                if not match_known and settings.enable_observed_reid and final_decision.candidate_observed_id and \
+                   final_decision.raw_response and final_decision.raw_response.get("sim_observed", 0) >= settings.observed_identity_threshold:
+                    match_observed = True
+                    logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
+                    recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed")
+                    # Actualizar last_seen y times_seen de la identidad
+                    recognition_repository.update_observed_identity(
+                        db=db,
+                        observed_id=final_decision.candidate_observed_id,
+                        camera_id=job.camera_id,
+                        timestamp=job.timestamp,
+                        face_id=face_id,
+                        image_url=face_image_url
+                    )
+
+                # 3. Completamente nuevo: Crear nueva identidad observada
+                if not match_known and not match_observed and settings.enable_observed_reid:
+                    # Validar calidad mínima
+                    det_score = final_decision.raw_response.get("det_score") if final_decision.raw_response else None
+                    if det_score is not None and float(det_score) >= settings.observed_identity_min_quality:
+                        logger.info("Creando nueva identidad observada...")
+                        new_observed = recognition_repository.create_observed_identity(
+                            db=db,
+                            camera_id=job.camera_id,
+                            face_id=face_id,
+                            image_url=face_image_url
+                        )
+                        recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
+                        recognition_repository.create_observed_embedding(db, new_observed.observed_identity_id, face_id, final_decision)
+                    else:
+                        logger.info("Rostro descartado para nueva identidad observada por baja calidad.")
 
                 face_count += 1
 

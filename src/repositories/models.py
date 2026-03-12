@@ -1,8 +1,8 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, SmallInteger, Enum as SQLEnum, BigInteger, JSON, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, SmallInteger, Enum as SQLEnum, BigInteger, JSON, ForeignKey, Numeric, Text
 from src.core.enums.domain import (
     SourceTypeEnum, SolicitudStatusEnum, ProcessingStatusEnum, PerfilEnum,
     FinalLabelEnum, EstadoValidacionEnum, AssignedStatusEnum, EngineEnum,
-    PersonaTipoEnum, EstadoEnum
+    PersonaTipoEnum, EstadoEnum, ObservedStatusEnum
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -61,9 +61,47 @@ class RecognitionFaceModel(Base):
     assigned_status = Column(SQLEnum(AssignedStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=AssignedStatusEnum.SIN_ASIGNAR)
     best_similarity = Column(Numeric(10, 8), nullable=True)
     best_engine = Column(SQLEnum(EngineEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=True)
+    observed_identity_id = Column(BigInteger, ForeignKey("observed_identity.observed_identity_id"), nullable=True)
     reviewed_by_operador_id = Column(Integer, nullable=True)
 
     event = relationship("RecognitionEventModel", back_populates="faces")
+    observed_identity = relationship("ObservedIdentityModel", back_populates="faces", foreign_keys=[observed_identity_id])
+
+class ObservedIdentityModel(Base):
+    __tablename__ = "observed_identity"
+
+    observed_identity_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    status = Column(SQLEnum(ObservedStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=ObservedStatusEnum.ACTIVE)
+    display_label = Column(String(150), nullable=True)
+    first_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    times_seen = Column(Integer, nullable=False, default=1)
+    last_camera_id = Column(Integer, ForeignKey("camara.camara_id"), nullable=True)
+    best_recognition_face_id = Column(BigInteger, ForeignKey("recognition_face.recognition_face_id"), nullable=True)
+    best_face_image_url = Column(String(1024), nullable=True)
+    notes = Column(Text, nullable=True)
+    promoted_persona_id = Column(BigInteger, ForeignKey("persona.persona_id"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    faces = relationship("RecognitionFaceModel", back_populates="observed_identity", foreign_keys="[RecognitionFaceModel.observed_identity_id]")
+    embeddings = relationship("ObservedIdentityEmbeddingModel", back_populates="observed_identity")
+
+class ObservedIdentityEmbeddingModel(Base):
+    __tablename__ = "observed_identity_embedding"
+
+    observed_identity_embedding_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    observed_identity_id = Column(BigInteger, ForeignKey("observed_identity.observed_identity_id"), nullable=False)
+    recognition_face_id = Column(BigInteger, ForeignKey("recognition_face.recognition_face_id"), nullable=False)
+    engine = Column(SQLEnum(EngineEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
+    model_name = Column(String(100), nullable=True)
+    embedding_vector = Column(JSON, nullable=False)
+    embedding_dim = Column(SmallInteger, nullable=True)
+    quality_score = Column(Numeric(10, 6), nullable=True)
+    is_representative = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    observed_identity = relationship("ObservedIdentityModel", back_populates="embeddings")
 
 class PersonaModel(Base):
     __tablename__ = "persona"

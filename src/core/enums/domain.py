@@ -4,6 +4,12 @@ class EstadoEnum(str, Enum):
     ACTIVO = 'activo'
     INACTIVO = 'inactivo'
 
+class ObservedStatusEnum(str, Enum):
+    ACTIVE = 'active'
+    ARCHIVED = 'archived'
+    MERGED = 'merged'
+    PROMOTED = 'promoted'
+
 class CamaraUbicacionEnum(str, Enum):
     INGRESO = 'Ingreso'
     ESTADIA = 'Estadia'
