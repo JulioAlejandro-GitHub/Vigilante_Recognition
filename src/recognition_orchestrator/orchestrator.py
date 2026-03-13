@@ -235,7 +235,7 @@ class RecognitionOrchestrator(threading.Thread):
                         camera_id=job.camera_id,
                         timestamp=job.timestamp,
                         face_id=face_id,
-                        image_url=face_image_url
+                        image_url=face.face_image_url
                     )
 
                 # 3. Completamente nuevo: Crear nueva identidad observada
@@ -248,7 +248,7 @@ class RecognitionOrchestrator(threading.Thread):
                             db=db,
                             camera_id=job.camera_id,
                             face_id=face_id,
-                            image_url=face_image_url
+                            image_url=face.face_image_url
                         )
                         recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
                         recognition_repository.create_observed_embedding(db, new_observed.observed_identity_id, face_id, final_decision)
