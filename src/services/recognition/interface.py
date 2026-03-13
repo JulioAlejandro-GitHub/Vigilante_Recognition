@@ -10,6 +10,8 @@ class EngineResultContract(BaseModel):
     similarity: Optional[float] = None
     candidate_persona_id: Optional[int] = None
     candidate_persona_embedding_id: Optional[int] = None
+    candidate_observed_id: Optional[int] = None
+    candidate_observed_embedding_id: Optional[int] = None
     embedding: Optional[List[float]] = None
     embedding_dim: Optional[int] = None
     processing_ms: Optional[int] = None

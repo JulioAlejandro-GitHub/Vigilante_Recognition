@@ -44,42 +44,52 @@ class InsightFaceService(RecognitionEngineInterface):
         best_face = max(faces, key=lambda f: f.det_score)
         embedding = best_face.normed_embedding
 
-        # 2. Matching contra galería
+        # 2. Matching contra galería (combinada: conocidos y observados)
         best_match_id = None
         best_embedding_id = None
-        best_similarity = -1.0
+        best_observed_id = None
+        best_observed_embedding_id = None
+
+        best_similarity_persona = -1.0
+        best_similarity_observed = -1.0
 
         for item in gallery:
-            # Filtrar por engine para evitar dimension mismatch con otros motores (ej. deepface)
+            # Filtrar por engine para evitar dimension mismatch con otros motores
             if item.get('engine') != 'insightface':
                 continue
 
-            # Asumimos que gallery tiene: persona_id, persona_embedding_id, embedding
-            # Si en BD es JSON array, lo convertimos a numpy
             gal_embed = np.array(item['embedding'], dtype=np.float32)
             similarity = self._cosine_similarity(embedding, gal_embed)
 
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match_id = item['persona_id']
-                best_embedding_id = item['persona_embedding_id']
+            if 'persona_id' in item and item['persona_id'] is not None:
+                if similarity > best_similarity_persona:
+                    best_similarity_persona = similarity
+                    best_match_id = item['persona_id']
+                    best_embedding_id = item.get('persona_embedding_id')
+            elif 'observed_identity_id' in item and item['observed_identity_id'] is not None:
+                if similarity > best_similarity_observed:
+                    best_similarity_observed = similarity
+                    best_observed_id = item['observed_identity_id']
+                    best_observed_embedding_id = item.get('observed_identity_embedding_id')
 
-        # Verificar si supera el umbral
-        candidate_persona_id = best_match_id if best_similarity >= self.threshold else None
-        candidate_embedding_id = best_embedding_id if best_similarity >= self.threshold else None
+        # Escoger la similitud máxima global para la respuesta
+        max_similarity = max(best_similarity_persona, best_similarity_observed)
 
         return EngineResultContract(
             engine="insightface",
             model_name=self.model_name,
             model_version="latest",
             detected_human=True,
-            similarity=float(best_similarity) if best_similarity != -1.0 else None,
-            candidate_persona_id=candidate_persona_id,
-            candidate_persona_embedding_id=candidate_embedding_id,
+            similarity=float(max_similarity) if max_similarity != -1.0 else None,
+            candidate_persona_id=best_match_id,
+            candidate_persona_embedding_id=best_embedding_id,
+            candidate_observed_id=best_observed_id,
+            candidate_observed_embedding_id=best_observed_embedding_id,
             embedding=embedding.tolist(),
             embedding_dim=len(embedding),
             processing_ms=int((time.time() - start_time) * 1000),
-            raw_response={"det_score": float(best_face.det_score), "bbox": best_face.bbox.tolist()}
+            raw_response={"det_score": float(best_face.det_score), "bbox": best_face.bbox.tolist(),
+                          "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed)}
         )
 
 # Instancia global para ser usada por el orquestador

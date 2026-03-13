@@ -45,16 +45,13 @@ class DeepFaceService(RecognitionEngineInterface):
             import numpy as np
             best_match_id = None
             best_embedding_id = None
-            best_similarity = -1.0
+            best_observed_id = None
+            best_observed_embedding_id = None
 
-            # Definir un umbral interno de DeepFace (ej: si cosine_dist > 0.4 es diferente)
-            # Esto debería ser configurable en .env
-            threshold = 0.6  # Equivalente a distance < 0.40 para cosine en VGG-Face/Facenet
+            best_similarity_persona = -1.0
+            best_similarity_observed = -1.0
 
             for item in gallery:
-                # OJO: Los embeddings de la galería que recibe podrían ser de InsightFace o DeepFace.
-                # Para esta prueba, asumimos que todos los embeddings de la galería son comparables (o filtramos antes)
-                # En un sistema real, la galería filtraría por `engine`.
                 if item.get('engine') != 'deepface':
                     continue
 
@@ -64,26 +61,34 @@ class DeepFaceService(RecognitionEngineInterface):
                 # Similitud Coseno
                 similarity = np.dot(embed_np, gal_embed) / (np.linalg.norm(embed_np) * np.linalg.norm(gal_embed))
 
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_match_id = item['persona_id']
-                    best_embedding_id = item['persona_embedding_id']
+                if 'persona_id' in item and item['persona_id'] is not None:
+                    if similarity > best_similarity_persona:
+                        best_similarity_persona = similarity
+                        best_match_id = item['persona_id']
+                        best_embedding_id = item.get('persona_embedding_id')
+                elif 'observed_identity_id' in item and item['observed_identity_id'] is not None:
+                    if similarity > best_similarity_observed:
+                        best_similarity_observed = similarity
+                        best_observed_id = item['observed_identity_id']
+                        best_observed_embedding_id = item.get('observed_identity_embedding_id')
 
-            candidate_persona_id = best_match_id if best_similarity >= threshold else None
-            candidate_embedding_id = best_embedding_id if best_similarity >= threshold else None
+            max_similarity = max(best_similarity_persona, best_similarity_observed)
 
             return EngineResultContract(
                 engine="deepface",
                 model_name=self.model_name,
                 model_version="latest",
                 detected_human=True,
-                similarity=float(best_similarity) if best_similarity != -1.0 else None,
-                candidate_persona_id=candidate_persona_id,
-                candidate_persona_embedding_id=candidate_embedding_id,
+                similarity=float(max_similarity) if max_similarity != -1.0 else None,
+                candidate_persona_id=best_match_id,
+                candidate_persona_embedding_id=best_embedding_id,
+                candidate_observed_id=best_observed_id,
+                candidate_observed_embedding_id=best_observed_embedding_id,
                 embedding=embedding,
                 embedding_dim=len(embedding),
                 processing_ms=int((time.time() - start_time) * 1000),
-                raw_response={"face_confidence": objs[0].get("face_confidence")}
+                raw_response={"face_confidence": objs[0].get("face_confidence"),
+                              "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed)}
             )
 
         except ValueError as e:

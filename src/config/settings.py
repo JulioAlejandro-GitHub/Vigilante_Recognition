@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     insightface_ambiguous_threshold: float = Field(default=0.50, description="Umbral inferior para considerar resultado ambiguo y lanzar DeepFace")
     deepface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en DeepFace")
 
+    # Re-Identificación Observados (No enrolados)
+    enable_observed_reid: bool = Field(default=True, description="Habilita la re-identificación de personas observadas no enroladas")
+    known_person_threshold: float = Field(default=0.60, description="Umbral para considerar coincidencia segura con persona enrolada")
+    observed_identity_threshold: float = Field(default=0.55, description="Umbral para considerar coincidencia segura con identidad observada")
+    observed_identity_max_embeddings: int = Field(default=10, description="Número máximo de embeddings a guardar por identidad observada")
+    observed_identity_min_quality: float = Field(default=0.50, description="Calidad mínima del rostro para guardar embedding de observado")
+
     # Storage y Media
     storage_enabled: bool = Field(default=True, description="Habilitar subida de media a Storage Service")
     storage_service_base_url: str = Field(default="http://localhost:8000", description="URL base de Vigilante Storage")

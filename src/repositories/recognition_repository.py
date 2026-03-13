@@ -4,10 +4,10 @@ from sqlalchemy import select
 from datetime import datetime
 
 from src.repositories.base import BaseRepository
-from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel
+from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel, ObservedIdentityModel, ObservedIdentityEmbeddingModel
 from src.core.models.domain import RecognitionJob
 from src.services.recognition.interface import EngineResultContract
-from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum
+from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum, ObservedStatusEnum
 
 class RecognitionRepository:
     """Repositorio para gestionar solicitudes y eventos de reconocimiento en BD"""
@@ -83,20 +83,37 @@ class RecognitionRepository:
         db.refresh(face)
         return face
 
-    def get_persona_embeddings(self, db: Session) -> List[Dict[str, Any]]:
-        """Obtiene la galería de embeddings de personas activas."""
-        embeddings = db.query(PersonaEmbeddingModel).filter(
+    def get_combined_embeddings(self, db: Session) -> List[Dict[str, Any]]:
+        """Obtiene la galería combinada de embeddings de personas activas e identidades observadas."""
+        # 1. Obtener embeddings de personas enroladas
+        persona_embeddings = db.query(PersonaEmbeddingModel).filter(
             PersonaEmbeddingModel.estado == EstadoEnum.ACTIVO
         ).all()
 
+        # 2. Obtener embeddings de identidades observadas activas
+        observed_embeddings = db.query(ObservedIdentityEmbeddingModel).join(
+            ObservedIdentityModel, ObservedIdentityModel.observed_identity_id == ObservedIdentityEmbeddingModel.observed_identity_id
+        ).filter(
+            ObservedIdentityModel.status == ObservedStatusEnum.ACTIVE
+        ).all()
+
         gallery = []
-        for emb in embeddings:
+        for emb in persona_embeddings:
             gallery.append({
                 "persona_id": emb.persona_id,
                 "persona_embedding_id": emb.persona_embedding_id,
                 "engine": emb.engine,
                 "embedding": emb.embedding
             })
+
+        for emb in observed_embeddings:
+            gallery.append({
+                "observed_identity_id": emb.observed_identity_id,
+                "observed_identity_embedding_id": emb.observed_identity_embedding_id,
+                "engine": emb.engine,
+                "embedding": emb.embedding_vector
+            })
+
         return gallery
 
     def save_recognition_engine_result(self, db: Session, face_id: int, result: EngineResultContract) -> RecognitionEngineResultModel:
@@ -120,14 +137,72 @@ class RecognitionRepository:
         db.refresh(engine_result)
         return engine_result
 
-    def update_face_with_best_match(self, db: Session, face_id: int, result: EngineResultContract) -> None:
+    def update_face_with_best_match(self, db: Session, face_id: int, result: EngineResultContract, match_type: str = "persona") -> None:
         """Actualiza el registro del rostro con la decisión final del orquestador."""
         face = db.query(RecognitionFaceModel).filter(RecognitionFaceModel.recognition_face_id == face_id).first()
-        if face and result.candidate_persona_id:
-            face.assigned_persona_id = result.candidate_persona_id
+        if face:
+            if match_type == "persona" and result.candidate_persona_id:
+                face.assigned_persona_id = result.candidate_persona_id
+                face.final_label = FinalLabelEnum.IDENTIFICADO
+            elif match_type == "observed" and result.candidate_observed_id:
+                face.observed_identity_id = result.candidate_observed_id
+                # Si es observado, sigue siendo desconocido pero con trazabilidad
+                face.final_label = FinalLabelEnum.DESCONOCIDO
+
             face.best_similarity = result.similarity
             face.best_engine = result.engine
-            face.final_label = FinalLabelEnum.IDENTIFICADO
             db.commit()
+
+    def update_face_with_new_observed_identity(self, db: Session, face_id: int, observed_id: int) -> None:
+        """Actualiza el registro del rostro con una nueva identidad observada recién creada."""
+        face = db.query(RecognitionFaceModel).filter(RecognitionFaceModel.recognition_face_id == face_id).first()
+        if face:
+            face.observed_identity_id = observed_id
+            face.final_label = FinalLabelEnum.DESCONOCIDO
+            db.commit()
+
+    def create_observed_identity(self, db: Session, camera_id: int, face_id: int, image_url: str) -> ObservedIdentityModel:
+        """Crea una nueva identidad observada."""
+        observed = ObservedIdentityModel(
+            status=ObservedStatusEnum.ACTIVE,
+            last_camera_id=camera_id,
+            best_recognition_face_id=face_id,
+            best_face_image_url=image_url,
+            times_seen=1
+        )
+        db.add(observed)
+        db.commit()
+        db.refresh(observed)
+        return observed
+
+    def update_observed_identity(self, db: Session, observed_id: int, camera_id: int, timestamp: datetime, face_id: int, image_url: str) -> ObservedIdentityModel:
+        """Actualiza una identidad observada existente tras un nuevo match."""
+        observed = db.query(ObservedIdentityModel).filter(ObservedIdentityModel.observed_identity_id == observed_id).first()
+        if observed:
+            observed.times_seen += 1
+            observed.last_seen_at = timestamp
+            observed.last_camera_id = camera_id
+            observed.best_recognition_face_id = face_id
+            observed.best_face_image_url = image_url
+            db.commit()
+            db.refresh(observed)
+        return observed
+
+    def create_observed_embedding(self, db: Session, observed_id: int, face_id: int, result: EngineResultContract) -> ObservedIdentityEmbeddingModel:
+        """Guarda un nuevo embedding para una identidad observada."""
+        emb = ObservedIdentityEmbeddingModel(
+            observed_identity_id=observed_id,
+            recognition_face_id=face_id,
+            engine=result.engine,
+            model_name=result.model_name,
+            embedding_vector=result.embedding,
+            embedding_dim=result.embedding_dim,
+            quality_score=result.raw_response.get("det_score") if result.raw_response else None,
+            is_representative=True # Por simplificar, el nuevo siempre es representativo o podríamos manejar lógica de máximo
+        )
+        db.add(emb)
+        db.commit()
+        db.refresh(emb)
+        return emb
 
 recognition_repository = RecognitionRepository()
