@@ -10,6 +10,9 @@ from src.services.recognition.interface import EngineResultContract
 from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum, ObservedStatusEnum, ObservedLabelEnum, RiskLevelEnum
 from dateutil.relativedelta import relativedelta
 from src.config.settings import settings
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class RecognitionRepository:
     """Repositorio para gestionar solicitudes y eventos de reconocimiento en BD"""
