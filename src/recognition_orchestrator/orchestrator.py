@@ -131,22 +131,12 @@ class RecognitionOrchestrator(threading.Thread):
             )
             logger.debug(f"Creado evento de reconocimiento ID: {event.recognition_event_id}")
 
-            # 3. Guardar el frame full ahora que tenemos el event_id
+            # Flags y variables diferidas de subida
             frame_img_path = None
             frame_img_url = None
-            if frame_img is not None:
-                # storage_service ahora devuelve (object_key, public_url)
-                frame_img_path, frame_img_url = storage_service.save_frame_full(
-                    job.camera_id, event.recognition_event_id, job.timestamp, frame_img
-                )
-                if frame_img_url:
-                    # Usamos el object_key (frame_img_path) para compatibilidad con img/frame_img
-                    recognition_repository.update_event_images(db, event.recognition_event_id, frame_img_path, frame_img_url)
+            frame_uploaded = False
 
-            # Actualizar también la solicitud por compatibilidad (legacy path o key object)
-            if frame_img_path:
-                solicitud.img = frame_img_path
-                db.commit()
+            # 3. (Diferido) La subida del frame_full se hará sólo si procesamos un rostro que no esté en cooldown
 
             # 4. Obtener detecciones y galería combinada
             detections = job.metadata.get("detections", []) if job.metadata else []
@@ -261,12 +251,104 @@ class RecognitionOrchestrator(threading.Thread):
                     # Sin embargo, si es DISCARDED, tal vez ni guardamos a disco para ahorrar.
                     # Decisión: Lo guardamos para tener registro de por qué falló o evidencia de intento.
 
-                    # Guardar crops usando el face_crop REAL
+                    # Guardar crops diferido: preparamos variables en None
                     face_img_path = None
                     face_img_url = None
                     face_preview_path = None
                     face_preview_url = None
 
+                    # Extraer el embedding y ejecutar InsightFace para decidir ANTES de subir y guardar en DB
+                    start_time = time.time()
+                    embedding = face_obj.normed_embedding
+                    processing_ms = int((time.time() - start_time) * 1000)
+
+                    # Si la calidad indica que lo descartemos, saltamos totalmente (para no procesarlo ni guardarlo)
+                    if decision == FaceQualityDecision.DISCARDED:
+                        continue
+
+                    if decision == FaceQualityDecision.USABLE_FOR_STORAGE_ONLY:
+                        # No ejecutamos matching. Lo marcaremos para que se suba, pero InsightFace no actúa
+                        insight_result = None
+                        final_decision = None
+                    else:
+                        insight_result = insightface_service.match_embedding(embedding, face_obj, gallery, processing_ms)
+
+                        if not insight_result.detected_human:
+                            logger.warning(f"InsightFace falló al extraer embedding del rostro {face_count} a pesar de haberlo detectado previamente.")
+                            continue
+
+                        logger.info(f"Resultado InsightFace - Rostro {face_count}: Similaridad: {insight_result.similarity}")
+                        final_decision = insight_result
+
+                    # Evaluar necesidad de DeepFace y Reglas de decisión (Solo si hubo un final_decision, ie no era USABLE_FOR_STORAGE_ONLY)
+                    match_known = False
+                    match_observed = False
+                    is_suppressed = False
+                    obs_label = "unknown"
+                    obs_risk = "low"
+
+                    if final_decision:
+                        # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad) SOLO PARA CONOCIDOS
+                        sim_persona = insight_result.similarity_persona or -1.0
+                        if settings.insightface_ambiguous_threshold <= sim_persona < settings.known_person_threshold:
+                            logger.info(f"Resultado ambiguo de InsightFace para conocido (sim: {sim_persona:.4f}). Ejecutando DeepFace como fallback...")
+                            deep_result = deepface_service.process_face(face_crop_img, gallery)
+                            # Nota: no podemos guardar deep_result aún en bd xq face_id no existe, lo guardamos dsp
+
+                            logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad Persona: {deep_result.similarity_persona}")
+                            if deep_result.similarity_persona is not None and deep_result.similarity_persona >= settings.deepface_threshold:
+                                final_decision = deep_result
+                                logger.info("DeepFace ha confirmado la identidad de la persona conocida.")
+                            else:
+                                logger.info("DeepFace tampoco pudo confirmar contundentemente al conocido.")
+
+                        # Reglas de decisión explícitas y jerárquicas:
+                        final_sim_persona = final_decision.similarity_persona or -1.0
+                        final_sim_observed = final_decision.similarity_observed or -1.0
+                        current_ts = time.time()
+
+                        # 1. Match con persona conocida
+                        if final_decision.candidate_persona_id and final_sim_persona >= settings.known_person_threshold:
+                            match_known = True
+                            logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id} (sim: {final_sim_persona:.4f})")
+
+                            # Suprimir por cámara
+                            if self._is_in_cooldown(job.camera_id, "persona", final_decision.candidate_persona_id, current_ts):
+                                logger.info(f"Supresión por cámara activa para persona conocida {final_decision.candidate_persona_id}. Omitiendo upload y BD.")
+                                is_suppressed = True
+                                continue # Cortocircuito total: no guardamos NADA, salimos de este rostro
+
+                        # 2. Match con identidad observada
+                        if not match_known and settings.enable_observed_identity and final_decision.candidate_observed_id and \
+                           final_sim_observed >= settings.observed_identity_threshold:
+                            match_observed = True
+                            logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id} (sim: {final_sim_observed:.4f})")
+
+                            # Extraer label y risk
+                            obs_label = final_decision.raw_response.get("observed_label", "unknown") if final_decision.raw_response else "unknown"
+                            obs_risk = final_decision.raw_response.get("observed_risk", "low") if final_decision.raw_response else "low"
+
+                            # Suprimir por cámara
+                            if self._is_in_cooldown(job.camera_id, "observed", final_decision.candidate_observed_id, current_ts):
+                                logger.info(f"Supresión por cámara activa para identidad observada {final_decision.candidate_observed_id}. Omitiendo upload y BD.")
+                                is_suppressed = True
+                                continue # Cortocircuito total: no guardamos NADA, salimos de este rostro
+
+                    # Si llegamos aquí, NO estamos en cooldown. Debemos subir las imágenes y guardar los registros
+
+                    # Subir el frame full SOLAMENTE UNA VEZ por evento y sólo si hay al menos un rostro no suprimido
+                    if not frame_uploaded and frame_img is not None:
+                        frame_img_path, frame_img_url = storage_service.save_frame_full(
+                            job.camera_id, event.recognition_event_id, job.timestamp, frame_img
+                        )
+                        if frame_img_url:
+                            recognition_repository.update_event_images(db, event.recognition_event_id, frame_img_path, frame_img_url)
+                        if frame_img_path:
+                            solicitud.img = frame_img_path
+                            db.commit()
+                        frame_uploaded = True
+
+                    # Subir las imágenes del rostro
                     face_img_path, face_img_url = storage_service.save_face_crop(
                         job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
                     )
@@ -288,83 +370,20 @@ class RecognitionOrchestrator(threading.Thread):
                     )
                     face_id = face_record.recognition_face_id
 
-                    # Si la calidad indica que lo descartemos para matching e identidad, saltamos
-                    if decision == FaceQualityDecision.DISCARDED:
+                    # Si no había decisión (porque era USABLE_FOR_STORAGE_ONLY) terminamos aquí
+                    if not final_decision:
                         continue
 
-                    # Extraer el embedding y ejecutar InsightFace
-                    start_time = time.time()
-                    embedding = face_obj.normed_embedding
-                    processing_ms = int((time.time() - start_time) * 1000)
-
-                    # Si es USABLE_FOR_STORAGE_ONLY, no ejecutamos matching, pero tal vez guardamos un result dummy si queremos,
-                    # o simplemente no matchamos.
-                    if decision == FaceQualityDecision.USABLE_FOR_STORAGE_ONLY:
-                        # Log o guardar result dummy? No hace falta.
-                        continue
-
-                    insight_result = insightface_service.match_embedding(embedding, face_obj, gallery, processing_ms)
+                    # Guardamos el resultado del motor inicial
                     recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
+                    # Si final_decision es distinto (ie. fallback a deepface), guardamos también
+                    if final_decision is not insight_result:
+                        recognition_repository.save_recognition_engine_result(db, face_id, final_decision)
 
-                    if not insight_result.detected_human:
-                        logger.warning(f"InsightFace falló al extraer embedding del rostro {face_count} a pesar de haberlo detectado previamente.")
-                        continue
-
-                    logger.info(f"Resultado InsightFace - Rostro {face_count}: Similaridad: {insight_result.similarity}")
-
-                    final_decision = insight_result
-
-                    # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad) SOLO PARA CONOCIDOS
-                    # Prioridad 1: Match con Persona Conocida
-                    sim_persona = insight_result.similarity_persona or -1.0
-                    if settings.insightface_ambiguous_threshold <= sim_persona < settings.known_person_threshold:
-                        logger.info(f"Resultado ambiguo de InsightFace para conocido (sim: {sim_persona:.4f}). Ejecutando DeepFace como fallback...")
-                        deep_result = deepface_service.process_face(face_crop_img, gallery)
-                        recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
-                        logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad Persona: {deep_result.similarity_persona}")
-
-                        if deep_result.similarity_persona is not None and deep_result.similarity_persona >= settings.deepface_threshold:
-                            final_decision = deep_result
-                            logger.info("DeepFace ha confirmado la identidad de la persona conocida.")
-                        else:
-                            logger.info("DeepFace tampoco pudo confirmar contundentemente al conocido.")
-
-                    # Reglas de decisión explícitas y jerárquicas:
-                    match_known = False
-                    match_observed = False
-                    final_sim_persona = final_decision.similarity_persona or -1.0
-                    final_sim_observed = final_decision.similarity_observed or -1.0
-                    current_ts = time.time()
-
-                    # 1. Match con persona conocida
-                    if final_decision.candidate_persona_id and final_sim_persona >= settings.known_person_threshold:
-                        match_known = True
-                        logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id} (sim: {final_sim_persona:.4f})")
-
-                        # Suprimir por cámara
-                        if self._is_in_cooldown(job.camera_id, "persona", final_decision.candidate_persona_id, current_ts):
-                            logger.info(f"Supresión por cámara activa para persona conocida {final_decision.candidate_persona_id}. Omitiendo BD.")
-                            # Igual asignamos el ID al rostro para no dejarlo huérfano en el evento, pero no hacemos alertas ni flujos pesados.
-                            recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
-                            continue
-
+                    # Aplicar updates en BD para el match (ya que no fue suprimido)
+                    if match_known:
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
-
-                    # 2. Match con identidad observada
-                    if not match_known and settings.enable_observed_identity and final_decision.candidate_observed_id and \
-                       final_sim_observed >= settings.observed_identity_threshold:
-                        match_observed = True
-                        logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id} (sim: {final_sim_observed:.4f})")
-
-                        # Extraer label y risk
-                        obs_label = final_decision.raw_response.get("observed_label", "unknown") if final_decision.raw_response else "unknown"
-                        obs_risk = final_decision.raw_response.get("observed_risk", "low") if final_decision.raw_response else "low"
-
-                        # Suprimir por cámara
-                        if self._is_in_cooldown(job.camera_id, "observed", final_decision.candidate_observed_id, current_ts):
-                            logger.info(f"Supresión por cámara activa para identidad observada {final_decision.candidate_observed_id}. Omitiendo BD.")
-                            recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed", observed_label=obs_label)
-                            continue
+                    elif match_observed:
 
                         # ALERTA OPERATIVA si es relevante
                         if obs_label in ['ladron', 'sospechoso', 'persona_interes'] or obs_risk in ['high', 'critical']:
