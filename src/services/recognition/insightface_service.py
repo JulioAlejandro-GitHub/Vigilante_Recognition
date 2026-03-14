@@ -53,6 +53,11 @@ class InsightFaceService(RecognitionEngineInterface):
         best_observed_label = "unknown"
         best_observed_risk = "low"
 
+        # Agrupamos los scores por identidad
+        scores_by_persona = {}
+        scores_by_observed = {}
+        info_by_observed = {}
+
         for item in gallery:
             # Filtrar por engine para evitar dimension mismatch con otros motores
             if item.get('engine') != 'insightface':
@@ -62,17 +67,44 @@ class InsightFaceService(RecognitionEngineInterface):
             similarity = self._cosine_similarity(embedding, gal_embed)
 
             if 'persona_id' in item and item['persona_id'] is not None:
-                if similarity > best_similarity_persona:
-                    best_similarity_persona = similarity
-                    best_match_id = item['persona_id']
-                    best_embedding_id = item.get('persona_embedding_id')
+                pid = item['persona_id']
+                if pid not in scores_by_persona:
+                    scores_by_persona[pid] = []
+                scores_by_persona[pid].append({
+                    "similarity": similarity,
+                    "embedding_id": item.get('persona_embedding_id')
+                })
             elif 'observed_identity_id' in item and item['observed_identity_id'] is not None:
-                if similarity > best_similarity_observed:
-                    best_similarity_observed = similarity
-                    best_observed_id = item['observed_identity_id']
-                    best_observed_embedding_id = item.get('observed_identity_embedding_id')
-                    best_observed_label = item.get('current_label', 'unknown')
-                    best_observed_risk = item.get('risk_level', 'low')
+                oid = item['observed_identity_id']
+                if oid not in scores_by_observed:
+                    scores_by_observed[oid] = []
+                    info_by_observed[oid] = {
+                        "label": item.get('current_label', 'unknown'),
+                        "risk": item.get('risk_level', 'low')
+                    }
+                scores_by_observed[oid].append({
+                    "similarity": similarity,
+                    "embedding_id": item.get('observed_identity_embedding_id')
+                })
+
+        # Evaluar la mejor coincidencia para conocidos usando el mejor score por identidad (representación combinada)
+        for pid, scores in scores_by_persona.items():
+            # Estrategia: el score de la identidad es el mejor de sus embeddings representativos
+            best_local_match = max(scores, key=lambda x: x["similarity"])
+            if best_local_match["similarity"] > best_similarity_persona:
+                best_similarity_persona = best_local_match["similarity"]
+                best_match_id = pid
+                best_embedding_id = best_local_match["embedding_id"]
+
+        # Evaluar la mejor coincidencia para observados
+        for oid, scores in scores_by_observed.items():
+            best_local_match = max(scores, key=lambda x: x["similarity"])
+            if best_local_match["similarity"] > best_similarity_observed:
+                best_similarity_observed = best_local_match["similarity"]
+                best_observed_id = oid
+                best_observed_embedding_id = best_local_match["embedding_id"]
+                best_observed_label = info_by_observed[oid]["label"]
+                best_observed_risk = info_by_observed[oid]["risk"]
 
         # Escoger la similitud máxima global para la respuesta
         max_similarity = max(best_similarity_persona, best_similarity_observed)

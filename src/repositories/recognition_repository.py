@@ -112,9 +112,22 @@ class RecognitionRepository:
     def get_combined_embeddings(self, db: Session) -> List[Dict[str, Any]]:
         """Obtiene la galería combinada de embeddings de personas activas e identidades observadas."""
         # 1. Obtener embeddings de personas enroladas
-        persona_embeddings = db.query(PersonaEmbeddingModel).filter(
+        persona_query = db.query(PersonaEmbeddingModel).filter(
             PersonaEmbeddingModel.estado == EstadoEnum.ACTIVO
-        ).all()
+        )
+
+        known_match_mode = settings.known_identity_match_mode
+        if known_match_mode == "centroid":
+            persona_query = persona_query.filter(PersonaEmbeddingModel.is_centroid == True)
+        elif known_match_mode == "topk":
+            persona_query = persona_query.filter(PersonaEmbeddingModel.is_representative == True)
+        elif known_match_mode == "centroid_plus_topk":
+            persona_query = persona_query.filter(
+                (PersonaEmbeddingModel.is_centroid == True) |
+                (PersonaEmbeddingModel.is_representative == True)
+            )
+
+        persona_embeddings = persona_query.all()
 
         # 2. Obtener embeddings de identidades observadas activas
         query = db.query(ObservedIdentityEmbeddingModel, ObservedIdentityModel).join(
@@ -142,7 +155,9 @@ class RecognitionRepository:
                 "persona_id": emb.persona_id,
                 "persona_embedding_id": emb.persona_embedding_id,
                 "engine": emb.engine,
-                "embedding": emb.embedding
+                "embedding": emb.embedding,
+                "is_centroid": emb.is_centroid,
+                "is_representative": emb.is_representative
             })
 
         for emb, obs in observed_embeddings:
@@ -305,6 +320,122 @@ class RecognitionRepository:
         db.commit()
         db.refresh(observed)
         return observed
+
+    def add_persona_embedding_and_update_gallery(self, db: Session, persona_id: int, result: EngineResultContract, quality_score: float, img_origen: Optional[str] = None) -> Optional[PersonaEmbeddingModel]:
+        """Añade un nuevo embedding a la persona y actualiza su galería (top-K / centroide)."""
+        import numpy as np
+
+        new_embedding = np.array(result.embedding, dtype=np.float32)
+
+        # 1. Obtener embeddings representativos para este motor
+        existing_embeddings = db.query(PersonaEmbeddingModel).filter(
+            PersonaEmbeddingModel.persona_id == persona_id,
+            PersonaEmbeddingModel.engine == result.engine,
+            PersonaEmbeddingModel.is_centroid == False,
+            PersonaEmbeddingModel.estado == EstadoEnum.ACTIVO
+        ).all()
+
+        # 2. Control de duplicidad
+        is_duplicate = False
+        for emp in existing_embeddings:
+            emp_vector = np.array(emp.embedding, dtype=np.float32)
+            similarity = np.dot(new_embedding, emp_vector) / (np.linalg.norm(new_embedding) * np.linalg.norm(emp_vector))
+            # Usamos el umbral de duplicidad de observados por consistencia, o un valor fijo muy alto
+            if similarity >= settings.observed_identity_duplicate_similarity_threshold:
+                is_duplicate = True
+                logger.info(f"Embedding descartado por redundancia para persona {persona_id} (sim: {similarity:.4f})")
+                break
+
+        new_emb_model = None
+        if not is_duplicate:
+            # 3. Guardar el nuevo embedding (se marca como representativo inicialmente)
+            new_emb_model = PersonaEmbeddingModel(
+                persona_id=persona_id,
+                engine=result.engine,
+                model_name=result.model_name,
+                embedding_dim=result.embedding_dim,
+                embedding=result.embedding,
+                img_origen=img_origen,
+                quality_score=quality_score,
+                is_primary=False,
+                is_representative=True,
+                is_centroid=False,
+                estado=EstadoEnum.ACTIVO
+            )
+            db.add(new_emb_model)
+            db.commit()
+            db.refresh(new_emb_model)
+
+        # Independientemente de si se añadió o no, actualizamos la galería para asegurar top-K / centroide
+        self.update_persona_gallery(db, persona_id, result.engine)
+
+        return new_emb_model
+
+    def update_persona_gallery(self, db: Session, persona_id: int, engine: str) -> None:
+        """Actualiza la galería operacional para una persona conocida (centroide y top-K)."""
+        import numpy as np
+
+        # 1. Obtener embeddings existentes para este motor (excluyendo centroide)
+        existing_embeddings = db.query(PersonaEmbeddingModel).filter(
+            PersonaEmbeddingModel.persona_id == persona_id,
+            PersonaEmbeddingModel.engine == engine,
+            PersonaEmbeddingModel.is_centroid == False,
+            PersonaEmbeddingModel.estado == EstadoEnum.ACTIVO
+        ).all()
+
+        if not existing_embeddings:
+            return
+
+        embeddings_to_keep = existing_embeddings
+
+        # 2. Seleccionar top-K embeddings representativos y aplicar límites (marcarlos)
+        if settings.known_identity_representative_policy == "best_quality":
+            # Ordenar por calidad descendente (si no hay, va al final)
+            existing_embeddings.sort(key=lambda x: float(x.quality_score) if x.quality_score is not None else -1.0, reverse=True)
+
+            max_embeddings = settings.known_identity_max_embeddings
+            embeddings_to_keep = existing_embeddings[:max_embeddings]
+
+            # Todos pasan a no representativos primero
+            for emb in existing_embeddings:
+                emb.is_representative = False
+
+            # Solo los top-K son representativos
+            for emb in embeddings_to_keep:
+                emb.is_representative = True
+
+        # 3. Actualizar Centroide (independiente de la política de retención, usar los top-K)
+        if settings.known_identity_use_centroid and embeddings_to_keep:
+            vectors = [np.array(e.embedding, dtype=np.float32) for e in embeddings_to_keep]
+            centroid = np.mean(vectors, axis=0)
+            centroid = centroid / np.linalg.norm(centroid) # Normalizar
+
+            centroid_record = db.query(PersonaEmbeddingModel).filter(
+                PersonaEmbeddingModel.persona_id == persona_id,
+                PersonaEmbeddingModel.engine == engine,
+                PersonaEmbeddingModel.is_centroid == True
+            ).first()
+
+            if not centroid_record:
+                centroid_record = PersonaEmbeddingModel(
+                    persona_id=persona_id,
+                    engine=engine,
+                    model_name=embeddings_to_keep[0].model_name,
+                    embedding=centroid.tolist(),
+                    embedding_dim=embeddings_to_keep[0].embedding_dim,
+                    quality_score=None,
+                    is_representative=False,
+                    is_centroid=True,
+                    estado=EstadoEnum.ACTIVO
+                )
+                db.add(centroid_record)
+            else:
+                centroid_record.embedding = centroid.tolist()
+                centroid_record.estado = EstadoEnum.ACTIVO
+
+            logger.info(f"Centroide recalculado para persona conocida {persona_id}")
+
+        db.commit()
 
     def update_observed_identity_gallery(self, db: Session, observed_id: int, face_id: int, result: EngineResultContract, quality_score: float) -> Optional[ObservedIdentityEmbeddingModel]:
         """Actualiza la galería operacional para una identidad observada."""

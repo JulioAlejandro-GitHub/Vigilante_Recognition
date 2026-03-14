@@ -383,6 +383,22 @@ class RecognitionOrchestrator(threading.Thread):
                     # Aplicar updates en BD para el match (ya que no fue suprimido)
                     if match_known:
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
+
+                        # Actualizamos la galería del conocido para recalcular centroides / top-K para que su comportamiento
+                        # sea consistente y convergente con el historial de observed_identity.
+                        quality_score = quality_metrics.get("quality_score", 0.0)
+                        if quality_score >= settings.min_quality_score_for_identity_update:
+                            logger.info(f"Añadiendo embedding al historial de la persona conocida {final_decision.candidate_persona_id}...")
+                            recognition_repository.add_persona_embedding_and_update_gallery(
+                                db=db,
+                                persona_id=final_decision.candidate_persona_id,
+                                result=final_decision,
+                                quality_score=quality_score,
+                                img_origen=face_record.face_image_url
+                            )
+                        else:
+                            logger.info("Evitando actualizar galería de la persona conocida debido a baja calidad facial del rostro.")
+
                     elif match_observed:
 
                         # ALERTA OPERATIVA si es relevante

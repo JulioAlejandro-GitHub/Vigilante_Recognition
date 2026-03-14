@@ -161,6 +161,8 @@ class PersonaEmbeddingModel(Base):
     perfil = Column(SQLEnum(PerfilEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=PerfilEnum.UNDETECTED)
     quality_score = Column(Numeric(10, 6), nullable=True)
     is_primary = Column(Boolean, nullable=False, default=False)
+    is_representative = Column(Boolean, nullable=False, default=True)
+    is_centroid = Column(Boolean, nullable=False, default=False)
     estado = Column(SQLEnum(EstadoEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=EstadoEnum.ACTIVO)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
