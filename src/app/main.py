@@ -37,6 +37,10 @@ def bootstrap():
 
     logger.info("Bootstrap completado. Arquitectura lista para siguientes fases.")
 
+    if settings.enable_observed_housekeeping:
+        from src.services.housekeeping import run_observed_identity_housekeeping
+        run_observed_identity_housekeeping()
+
     # Arrancar fase 2: Streaming e Ingesta YOLO
     start_streaming_service()
 

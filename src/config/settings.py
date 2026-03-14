@@ -41,10 +41,15 @@ class Settings(BaseSettings):
 
     # Re-Identificación Observados (No enrolados)
     enable_observed_reid: bool = Field(default=True, description="Habilita la re-identificación de personas observadas no enroladas")
+    enable_observed_identity: bool = Field(default=True, description="Habilita la re-identificación de personas observadas no enroladas")
     known_person_threshold: float = Field(default=0.60, description="Umbral para considerar coincidencia segura con persona enrolada")
     observed_identity_threshold: float = Field(default=0.55, description="Umbral para considerar coincidencia segura con identidad observada")
     observed_identity_max_embeddings: int = Field(default=10, description="Número máximo de embeddings a guardar por identidad observada")
     observed_identity_min_quality: float = Field(default=0.50, description="Calidad mínima del rostro para guardar embedding de observado")
+    default_observed_retention_policy: str = Field(default="1_month", description="Política de retención por defecto para identidades observadas")
+    enable_observed_housekeeping: bool = Field(default=True, description="Habilita el housekeeping de identidades observadas")
+    observed_housekeeping_mode: str = Field(default="archive", description="Modo de housekeeping (archive o delete)")
+    observed_housekeeping_batch_size: int = Field(default=100, description="Tamaño del batch para housekeeping")
 
     # Storage y Media
     storage_enabled: bool = Field(default=True, description="Habilitar subida de media a Storage Service")

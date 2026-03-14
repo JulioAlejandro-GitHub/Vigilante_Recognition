@@ -323,11 +323,21 @@ class RecognitionOrchestrator(threading.Thread):
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
 
                     # 2. Match con identidad observada
-                    if not match_known and settings.enable_observed_reid and final_decision.candidate_observed_id and \
+                    if not match_known and settings.enable_observed_identity and final_decision.candidate_observed_id and \
                        final_decision.raw_response and final_decision.raw_response.get("sim_observed", 0) >= settings.observed_identity_threshold:
                         match_observed = True
                         logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
-                        recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed")
+
+                        # Extraer label y risk desde raw_response que pasamos desde el servicio
+                        obs_label = final_decision.raw_response.get("observed_label", "unknown")
+                        obs_risk = final_decision.raw_response.get("observed_risk", "low")
+
+                        # ALERTA OPERATIVA si es relevante
+                        if obs_label in ['ladron', 'sospechoso', 'persona_interes'] or obs_risk in ['high', 'critical']:
+                            logger.warning(f"🚨 ALERTA OPERATIVA GENERADA 🚨 Identidad observada {final_decision.candidate_observed_id} detectada con clasificación: {obs_label} (Riesgo: {obs_risk}) en cámara {job.camera_id}")
+
+                        recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed", observed_label=obs_label)
+
                         # Actualizar last_seen y times_seen de la identidad solo si la calidad lo permite
                         if quality_metrics.get("quality_score", 0.0) >= settings.min_quality_score_for_identity_update:
                             recognition_repository.update_observed_identity(
@@ -342,7 +352,7 @@ class RecognitionOrchestrator(threading.Thread):
                             logger.info("Evitando actualizar identidad observada debido a baja calidad facial del rostro.")
 
                     # 3. Completamente nuevo: Crear nueva identidad observada
-                    if not match_known and not match_observed and settings.enable_observed_reid:
+                    if not match_known and not match_observed and settings.enable_observed_identity:
                         # Validar calidad mínima global en vez del det_score nada más
                         quality_score = quality_metrics.get("quality_score", 0.0)
                         if quality_score >= settings.min_quality_score_for_identity_update:

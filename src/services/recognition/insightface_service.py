@@ -50,6 +50,8 @@ class InsightFaceService(RecognitionEngineInterface):
 
         best_similarity_persona = -1.0
         best_similarity_observed = -1.0
+        best_observed_label = "unknown"
+        best_observed_risk = "low"
 
         for item in gallery:
             # Filtrar por engine para evitar dimension mismatch con otros motores
@@ -69,6 +71,8 @@ class InsightFaceService(RecognitionEngineInterface):
                     best_similarity_observed = similarity
                     best_observed_id = item['observed_identity_id']
                     best_observed_embedding_id = item.get('observed_identity_embedding_id')
+                    best_observed_label = item.get('current_label', 'unknown')
+                    best_observed_risk = item.get('risk_level', 'low')
 
         # Escoger la similitud máxima global para la respuesta
         max_similarity = max(best_similarity_persona, best_similarity_observed)
@@ -87,7 +91,8 @@ class InsightFaceService(RecognitionEngineInterface):
             embedding_dim=len(embedding),
             processing_ms=processing_ms,
             raw_response={"det_score": float(face_obj.det_score), "bbox": face_obj.bbox.tolist(),
-                          "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed)}
+                          "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed),
+                          "observed_label": best_observed_label, "observed_risk": best_observed_risk}
         )
 
     def process_face(self, face_img: Any, gallery: List[Dict[str, Any]]) -> EngineResultContract:

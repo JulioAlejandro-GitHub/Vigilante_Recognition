@@ -4,10 +4,12 @@ from sqlalchemy import select
 from datetime import datetime
 
 from src.repositories.base import BaseRepository
-from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel, ObservedIdentityModel, ObservedIdentityEmbeddingModel
+from src.repositories.models import SolicitudRecognitionModel, RecognitionEventModel, RecognitionFaceModel, PersonaEmbeddingModel, RecognitionEngineResultModel, ObservedIdentityModel, ObservedIdentityEmbeddingModel, ObservedIdentityLabelHistoryModel
 from src.core.models.domain import RecognitionJob
 from src.services.recognition.interface import EngineResultContract
-from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum, ObservedStatusEnum
+from src.core.enums.domain import SolicitudStatusEnum, EstadoEnum, FinalLabelEnum, ProcessingStatusEnum, ObservedStatusEnum, ObservedLabelEnum, RiskLevelEnum
+from dateutil.relativedelta import relativedelta
+from src.config.settings import settings
 
 class RecognitionRepository:
     """Repositorio para gestionar solicitudes y eventos de reconocimiento en BD"""
@@ -112,7 +114,7 @@ class RecognitionRepository:
         ).all()
 
         # 2. Obtener embeddings de identidades observadas activas
-        observed_embeddings = db.query(ObservedIdentityEmbeddingModel).join(
+        observed_embeddings = db.query(ObservedIdentityEmbeddingModel, ObservedIdentityModel).join(
             ObservedIdentityModel, ObservedIdentityModel.observed_identity_id == ObservedIdentityEmbeddingModel.observed_identity_id
         ).filter(
             ObservedIdentityModel.status == ObservedStatusEnum.ACTIVE
@@ -127,12 +129,14 @@ class RecognitionRepository:
                 "embedding": emb.embedding
             })
 
-        for emb in observed_embeddings:
+        for emb, obs in observed_embeddings:
             gallery.append({
                 "observed_identity_id": emb.observed_identity_id,
                 "observed_identity_embedding_id": emb.observed_identity_embedding_id,
                 "engine": emb.engine,
-                "embedding": emb.embedding_vector
+                "embedding": emb.embedding_vector,
+                "current_label": obs.current_label.value if obs.current_label else ObservedLabelEnum.UNKNOWN.value,
+                "risk_level": obs.risk_level.value if obs.risk_level else RiskLevelEnum.LOW.value
             })
 
         return gallery
@@ -158,7 +162,7 @@ class RecognitionRepository:
         db.refresh(engine_result)
         return engine_result
 
-    def update_face_with_best_match(self, db: Session, face_id: int, result: EngineResultContract, match_type: str = "persona") -> None:
+    def update_face_with_best_match(self, db: Session, face_id: int, result: EngineResultContract, match_type: str = "persona", observed_label: Optional[str] = None) -> None:
         """Actualiza el registro del rostro con la decisión final del orquestador."""
         face = db.query(RecognitionFaceModel).filter(RecognitionFaceModel.recognition_face_id == face_id).first()
         if face:
@@ -167,8 +171,15 @@ class RecognitionRepository:
                 face.final_label = FinalLabelEnum.IDENTIFICADO
             elif match_type == "observed" and result.candidate_observed_id:
                 face.observed_identity_id = result.candidate_observed_id
-                # Si es observado, sigue siendo desconocido pero con trazabilidad
-                face.final_label = FinalLabelEnum.DESCONOCIDO
+
+                # Intentamos heredar la etiqueta de la identidad observada
+                try:
+                    if observed_label and observed_label != ObservedLabelEnum.UNKNOWN.value:
+                         face.final_label = FinalLabelEnum(observed_label)
+                    else:
+                         face.final_label = FinalLabelEnum.DESCONOCIDO
+                except ValueError:
+                    face.final_label = FinalLabelEnum.DESCONOCIDO
 
             face.best_similarity = result.similarity
             face.best_engine = result.engine
@@ -182,14 +193,48 @@ class RecognitionRepository:
             face.final_label = FinalLabelEnum.DESCONOCIDO
             db.commit()
 
+    def _calculate_expiration(self, policy: str, from_date: datetime) -> Optional[datetime]:
+        """Calcula la fecha de expiración basada en una política"""
+        if not policy:
+            return None
+
+        try:
+            parts = policy.split("_")
+            amount = int(parts[0])
+            unit = parts[1]
+
+            if unit == "year" or unit == "years":
+                return from_date + relativedelta(years=amount)
+            elif unit == "month" or unit == "months":
+                return from_date + relativedelta(months=amount)
+            elif unit == "week" or unit == "weeks":
+                return from_date + relativedelta(weeks=amount)
+            elif unit == "day" or unit == "days":
+                return from_date + relativedelta(days=amount)
+        except Exception:
+            pass
+
+        return None
+
     def create_observed_identity(self, db: Session, camera_id: int, face_id: int, image_url: str) -> ObservedIdentityModel:
         """Crea una nueva identidad observada."""
+        now = datetime.utcnow()
+        policy = settings.default_observed_retention_policy
+        expires_at = self._calculate_expiration(policy, now)
+
         observed = ObservedIdentityModel(
             status=ObservedStatusEnum.ACTIVE,
+            current_label=ObservedLabelEnum.UNKNOWN,
+            risk_level=RiskLevelEnum.LOW,
+            alert_enabled=False,
             last_camera_id=camera_id,
             best_recognition_face_id=face_id,
             best_face_image_url=image_url,
-            times_seen=1
+            times_seen=1,
+            retention_policy=policy,
+            expires_at=expires_at,
+            first_seen_at=now,
+            last_seen_at=now
         )
         db.add(observed)
         db.commit()
@@ -205,8 +250,44 @@ class RecognitionRepository:
             observed.last_camera_id = camera_id
             observed.best_recognition_face_id = face_id
             observed.best_face_image_url = image_url
+
+            # Refrescar expiración
+            if observed.retention_policy:
+                observed.expires_at = self._calculate_expiration(observed.retention_policy, timestamp)
+
             db.commit()
             db.refresh(observed)
+        return observed
+
+    def update_observed_identity_classification(self, db: Session, observed_id: int, new_label: str, new_risk: str, changed_by: int = None, reason: str = None) -> Optional[ObservedIdentityModel]:
+        """Actualiza la clasificación (etiqueta y riesgo) de una identidad observada y deja rastro."""
+        observed = db.query(ObservedIdentityModel).filter(ObservedIdentityModel.observed_identity_id == observed_id).first()
+        if not observed:
+            return None
+
+        old_label = observed.current_label.value if observed.current_label else None
+        old_risk = observed.risk_level.value if observed.risk_level else None
+
+        observed.current_label = ObservedLabelEnum(new_label)
+        observed.risk_level = RiskLevelEnum(new_risk)
+
+        # Habilitar alertas automáticamente si el riesgo es alto o si es un ladrón/sospechoso
+        if new_label in [ObservedLabelEnum.LADRON.value, ObservedLabelEnum.SOSPECHOSO.value, ObservedLabelEnum.PERSONA_INTERES.value] or \
+           new_risk in [RiskLevelEnum.HIGH.value, RiskLevelEnum.CRITICAL.value]:
+            observed.alert_enabled = True
+
+        history = ObservedIdentityLabelHistoryModel(
+            observed_identity_id=observed_id,
+            old_label=old_label,
+            new_label=new_label,
+            old_risk_level=old_risk,
+            new_risk_level=new_risk,
+            changed_by=changed_by,
+            reason=reason
+        )
+        db.add(history)
+        db.commit()
+        db.refresh(observed)
         return observed
 
     def create_observed_embedding(self, db: Session, observed_id: int, face_id: int, result: EngineResultContract) -> ObservedIdentityEmbeddingModel:

@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, SmallInteger,
 from src.core.enums.domain import (
     SourceTypeEnum, SolicitudStatusEnum, ProcessingStatusEnum, PerfilEnum,
     FinalLabelEnum, EstadoValidacionEnum, AssignedStatusEnum, EngineEnum,
-    PersonaTipoEnum, EstadoEnum, ObservedStatusEnum
+    PersonaTipoEnum, EstadoEnum, ObservedStatusEnum, ObservedLabelEnum, RiskLevelEnum
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -79,6 +79,9 @@ class ObservedIdentityModel(Base):
 
     observed_identity_id = Column(BigInteger, primary_key=True, autoincrement=True)
     status = Column(SQLEnum(ObservedStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=ObservedStatusEnum.ACTIVE)
+    current_label = Column(SQLEnum(ObservedLabelEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=ObservedLabelEnum.UNKNOWN)
+    risk_level = Column(SQLEnum(RiskLevelEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=RiskLevelEnum.LOW)
+    alert_enabled = Column(Boolean, nullable=False, default=False)
     display_label = Column(String(150), nullable=True)
     first_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -86,6 +89,8 @@ class ObservedIdentityModel(Base):
     last_camera_id = Column(Integer, ForeignKey("camara.camara_id"), nullable=True)
     best_recognition_face_id = Column(BigInteger, ForeignKey("recognition_face.recognition_face_id"), nullable=True)
     best_face_image_url = Column(String(1024), nullable=True)
+    retention_policy = Column(String(50), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
     notes = Column(Text, nullable=True)
     promoted_persona_id = Column(BigInteger, ForeignKey("persona.persona_id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -93,6 +98,22 @@ class ObservedIdentityModel(Base):
 
     faces = relationship("RecognitionFaceModel", back_populates="observed_identity", foreign_keys="[RecognitionFaceModel.observed_identity_id]")
     embeddings = relationship("ObservedIdentityEmbeddingModel", back_populates="observed_identity")
+    label_history = relationship("ObservedIdentityLabelHistoryModel", back_populates="observed_identity")
+
+class ObservedIdentityLabelHistoryModel(Base):
+    __tablename__ = "observed_identity_label_history"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    observed_identity_id = Column(BigInteger, ForeignKey("observed_identity.observed_identity_id"), nullable=False)
+    old_label = Column(String(50), nullable=True)
+    new_label = Column(String(50), nullable=False)
+    old_risk_level = Column(String(50), nullable=True)
+    new_risk_level = Column(String(50), nullable=False)
+    changed_by = Column(Integer, nullable=True)
+    reason = Column(Text, nullable=True)
+    changed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    observed_identity = relationship("ObservedIdentityModel", back_populates="label_history")
 
 class ObservedIdentityEmbeddingModel(Base):
     __tablename__ = "observed_identity_embedding"

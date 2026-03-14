@@ -50,6 +50,8 @@ class DeepFaceService(RecognitionEngineInterface):
 
             best_similarity_persona = -1.0
             best_similarity_observed = -1.0
+            best_observed_label = "unknown"
+            best_observed_risk = "low"
 
             for item in gallery:
                 if item.get('engine') != 'deepface':
@@ -71,6 +73,8 @@ class DeepFaceService(RecognitionEngineInterface):
                         best_similarity_observed = similarity
                         best_observed_id = item['observed_identity_id']
                         best_observed_embedding_id = item.get('observed_identity_embedding_id')
+                        best_observed_label = item.get('current_label', 'unknown')
+                        best_observed_risk = item.get('risk_level', 'low')
 
             max_similarity = max(best_similarity_persona, best_similarity_observed)
 
@@ -88,7 +92,8 @@ class DeepFaceService(RecognitionEngineInterface):
                 embedding_dim=len(embedding),
                 processing_ms=int((time.time() - start_time) * 1000),
                 raw_response={"face_confidence": objs[0].get("face_confidence"),
-                              "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed)}
+                              "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed),
+                              "observed_label": best_observed_label, "observed_risk": best_observed_risk}
             )
 
         except ValueError as e:

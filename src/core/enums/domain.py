@@ -9,6 +9,22 @@ class ObservedStatusEnum(str, Enum):
     ARCHIVED = 'archived'
     MERGED = 'merged'
     PROMOTED = 'promoted'
+    EXPIRED = 'expired'
+
+class ObservedLabelEnum(str, Enum):
+    UNKNOWN = 'unknown'
+    OBSERVED = 'observed'
+    LADRON = 'ladron'
+    SOSPECHOSO = 'sospechoso'
+    PERSONA_INTERES = 'persona_interes'
+    VISITANTE = 'visitante'
+    PROVEEDOR = 'proveedor'
+
+class RiskLevelEnum(str, Enum):
+    LOW = 'low'
+    MEDIUM = 'medium'
+    HIGH = 'high'
+    CRITICAL = 'critical'
 
 class CamaraUbicacionEnum(str, Enum):
     INGRESO = 'Ingreso'
