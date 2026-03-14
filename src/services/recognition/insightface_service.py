@@ -38,26 +38,11 @@ class InsightFaceService(RecognitionEngineInterface):
         """Calcula la similitud coseno entre dos embeddings"""
         return np.dot(embed1, embed2) / (np.linalg.norm(embed1) * np.linalg.norm(embed2))
 
-    def process_face(self, face_img: Any, gallery: List[Dict[str, Any]]) -> EngineResultContract:
-        start_time = time.time()
-
-        # 1. Detección y extracción de embedding
-        faces = self.app.get(face_img)
-
-        if not faces:
-            logger.debug("InsightFace no detectó ningún rostro en la imagen proporcionada.")
-            return EngineResultContract(
-                engine="insightface",
-                model_name=self.model_name,
-                detected_human=False,
-                processing_ms=int((time.time() - start_time) * 1000)
-            )
-
-        # Tomar el rostro con mayor score
-        best_face = max(faces, key=lambda f: f.det_score)
-        embedding = best_face.normed_embedding
-
-        # 2. Matching contra galería (combinada: conocidos y observados)
+    def match_embedding(self, embedding: np.ndarray, face_obj: Any, gallery: List[Dict[str, Any]], processing_ms: int) -> EngineResultContract:
+        """
+        Realiza el matching contra la galería (combinada: conocidos y observados)
+        usando un embedding y un objeto de rostro ya extraídos.
+        """
         best_match_id = None
         best_embedding_id = None
         best_observed_id = None
@@ -100,10 +85,32 @@ class InsightFaceService(RecognitionEngineInterface):
             candidate_observed_embedding_id=best_observed_embedding_id,
             embedding=embedding.tolist(),
             embedding_dim=len(embedding),
-            processing_ms=int((time.time() - start_time) * 1000),
-            raw_response={"det_score": float(best_face.det_score), "bbox": best_face.bbox.tolist(),
+            processing_ms=processing_ms,
+            raw_response={"det_score": float(face_obj.det_score), "bbox": face_obj.bbox.tolist(),
                           "sim_persona": float(best_similarity_persona), "sim_observed": float(best_similarity_observed)}
         )
+
+    def process_face(self, face_img: Any, gallery: List[Dict[str, Any]]) -> EngineResultContract:
+        start_time = time.time()
+
+        # 1. Detección y extracción de embedding
+        faces = self.app.get(face_img)
+
+        if not faces:
+            logger.debug("InsightFace no detectó ningún rostro en la imagen proporcionada.")
+            return EngineResultContract(
+                engine="insightface",
+                model_name=self.model_name,
+                detected_human=False,
+                processing_ms=int((time.time() - start_time) * 1000)
+            )
+
+        # Tomar el rostro con mayor score
+        best_face = max(faces, key=lambda f: f.det_score)
+        embedding = best_face.normed_embedding
+
+        processing_ms = int((time.time() - start_time) * 1000)
+        return self.match_embedding(embedding, best_face, gallery, processing_ms)
 
 # Instancia global para ser usada por el orquestador
 insightface_service = InsightFaceService()

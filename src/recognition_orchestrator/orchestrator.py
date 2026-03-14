@@ -3,6 +3,7 @@ import time
 import os
 import cv2
 import numpy as np
+import time
 from typing import Optional
 
 from src.utils.logger import get_logger
@@ -13,6 +14,7 @@ from src.db.session import SessionLocal
 from src.services.recognition.insightface_service import insightface_service
 from src.services.recognition.deepface_service import deepface_service
 from src.services.media.storage import storage_service
+from src.services.quality.evaluator import face_quality_evaluator, FaceQualityDecision
 from src.config.settings import settings
 from src.core.enums.domain import ProcessingStatusEnum, SolicitudStatusEnum
 
@@ -222,6 +224,24 @@ class RecognitionOrchestrator(threading.Thread):
 
                     face_count += 1
 
+                    # Evaluacion de Calidad
+                    quality_metrics = face_quality_evaluator.evaluate(face_crop_img, face_obj)
+                    decision = quality_metrics.get("decision")
+                    discard_reason = quality_metrics.get("discard_reason")
+
+                    # Log de calidad
+                    if decision == FaceQualityDecision.DISCARDED:
+                        logger.warning(f"Rostro {face_count} descartado por calidad: {discard_reason}")
+                    elif decision == FaceQualityDecision.USABLE_FOR_STORAGE_ONLY:
+                        logger.info(f"Rostro {face_count} utilizable solo como evidencia: {discard_reason}")
+                    else:
+                        logger.info(f"Rostro {face_count} aprobado con score de calidad {quality_metrics.get('quality_score'):.2f}")
+
+                    # Si es totalmente descartado y no queremos guardar basura
+                    # Podríamos decidir no guardar la imagen si es muy mala, pero por trazabilidad la guardamos.
+                    # Sin embargo, si es DISCARDED, tal vez ni guardamos a disco para ahorrar.
+                    # Decisión: Lo guardamos para tener registro de por qué falló o evidencia de intento.
+
                     # Guardar crops usando el face_crop REAL
                     face_img_path = None
                     face_img_url = None
@@ -244,12 +264,27 @@ class RecognitionOrchestrator(threading.Thread):
                         face_img=face_img_path,
                         face_preview_img=face_preview_path,
                         face_image_url=face_img_url,
-                        face_preview_url=face_preview_url
+                        face_preview_url=face_preview_url,
+                        quality_metrics=quality_metrics
                     )
                     face_id = face_record.recognition_face_id
 
-                    # Ejecutar InsightFace como motor principal sobre el crop del rostro real
-                    insight_result = insightface_service.process_face(face_crop_img, gallery)
+                    # Si la calidad indica que lo descartemos para matching e identidad, saltamos
+                    if decision == FaceQualityDecision.DISCARDED:
+                        continue
+
+                    # Extraer el embedding y ejecutar InsightFace
+                    start_time = time.time()
+                    embedding = face_obj.normed_embedding
+                    processing_ms = int((time.time() - start_time) * 1000)
+
+                    # Si es USABLE_FOR_STORAGE_ONLY, no ejecutamos matching, pero tal vez guardamos un result dummy si queremos,
+                    # o simplemente no matchamos.
+                    if decision == FaceQualityDecision.USABLE_FOR_STORAGE_ONLY:
+                        # Log o guardar result dummy? No hace falta.
+                        continue
+
+                    insight_result = insightface_service.match_embedding(embedding, face_obj, gallery, processing_ms)
                     recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
 
                     if not insight_result.detected_human:
@@ -293,21 +328,24 @@ class RecognitionOrchestrator(threading.Thread):
                         match_observed = True
                         logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed")
-                        # Actualizar last_seen y times_seen de la identidad
-                        recognition_repository.update_observed_identity(
-                            db=db,
-                            observed_id=final_decision.candidate_observed_id,
-                            camera_id=job.camera_id,
-                            timestamp=job.timestamp,
-                            face_id=face_id,
-                            image_url=face_record.face_image_url
-                        )
+                        # Actualizar last_seen y times_seen de la identidad solo si la calidad lo permite
+                        if quality_metrics.get("quality_score", 0.0) >= settings.min_quality_score_for_identity_update:
+                            recognition_repository.update_observed_identity(
+                                db=db,
+                                observed_id=final_decision.candidate_observed_id,
+                                camera_id=job.camera_id,
+                                timestamp=job.timestamp,
+                                face_id=face_id,
+                                image_url=face_record.face_image_url
+                            )
+                        else:
+                            logger.info("Evitando actualizar identidad observada debido a baja calidad facial del rostro.")
 
                     # 3. Completamente nuevo: Crear nueva identidad observada
                     if not match_known and not match_observed and settings.enable_observed_reid:
-                        # Validar calidad mínima
-                        det_score = final_decision.raw_response.get("det_score") if final_decision.raw_response else None
-                        if det_score is not None and float(det_score) >= settings.observed_identity_min_quality:
+                        # Validar calidad mínima global en vez del det_score nada más
+                        quality_score = quality_metrics.get("quality_score", 0.0)
+                        if quality_score >= settings.min_quality_score_for_identity_update:
                             logger.info("Creando nueva identidad observada...")
                             new_observed = recognition_repository.create_observed_identity(
                                 db=db,

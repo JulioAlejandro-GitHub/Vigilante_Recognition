@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     face_min_height: int = Field(default=30, description="Alto mínimo del bounding box del rostro")
     face_padding_percent: float = Field(default=0.10, description="Porcentaje de padding para recortar el rostro")
 
+    # Filtros de Calidad Facial
+    enable_face_quality_filter: bool = Field(default=True, description="Activa el filtrado de rostros por calidad")
+    min_blur_score: float = Field(default=50.0, description="Varianza laplaciana mínima para considerar un rostro nítido")
+    min_face_detector_score: float = Field(default=0.6, description="Umbral mínimo de score del detector para aceptar la cara")
+    min_quality_score_for_matching: float = Field(default=0.4, description="Score global mínimo para ejecutar reconocimiento facial")
+    min_quality_score_for_identity_update: float = Field(default=0.6, description="Score global mínimo para crear o actualizar identidades observadas")
+
     # Reconocimiento
     default_rtsp_port: int = Field(default=554, description="Puerto RTSP por defecto a usar si la cámara no lo especifica")
     insightface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en InsightFace")
