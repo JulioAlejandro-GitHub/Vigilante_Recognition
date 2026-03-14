@@ -399,6 +399,8 @@ CREATE TABLE `persona` (
 
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
+-- Vigilante_2.persona_embedding definition
+
 CREATE TABLE `persona_embedding` (
   `persona_embedding_id` bigint NOT NULL AUTO_INCREMENT,
   `persona_id` bigint NOT NULL,
@@ -416,6 +418,8 @@ CREATE TABLE `persona_embedding` (
   `estado` enum('activo','inactivo') NOT NULL DEFAULT 'activo',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `created_by_operador_id` int DEFAULT NULL,
+  `is_representative` tinyint(1) NOT NULL DEFAULT '1',
+  `is_centroid` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`persona_embedding_id`),
   UNIQUE KEY `uq_persona_embedding_hash` (`embedding_hash`),
   KEY `idx_persona_embedding_persona_estado` (`persona_id`,`estado`),
