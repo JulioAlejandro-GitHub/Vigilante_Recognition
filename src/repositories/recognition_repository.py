@@ -331,7 +331,7 @@ class RecognitionRepository:
 
         new_emb_model = None
         if not is_duplicate:
-            # 3. Insertar el nuevo embedding
+            # 3. Preparar el nuevo embedding (no se inserta todavía)
             new_emb_model = ObservedIdentityEmbeddingModel(
                 observed_identity_id=observed_id,
                 recognition_face_id=face_id,
@@ -342,9 +342,7 @@ class RecognitionRepository:
                 quality_score=quality_score,
                 is_representative=False
             )
-            db.add(new_emb_model)
             existing_embeddings.append(new_emb_model)
-            logger.info(f"Embedding agregado a galería observada para identidad {observed_id}")
 
         embeddings_to_keep = existing_embeddings
         embeddings_to_delete = []
@@ -359,14 +357,21 @@ class RecognitionRepository:
             embeddings_to_keep = existing_embeddings[:max_embeddings]
             embeddings_to_delete = existing_embeddings[max_embeddings:]
 
-            # Marcar representativos (por simplificar, los mantenidos son todos representativos,
-            # o se podría marcar solo los primeros si K es grande)
+            # Marcar representativos (por simplificar, los mantenidos son todos representativos)
             for emb in embeddings_to_keep:
                 emb.is_representative = True
 
             for emb in embeddings_to_delete:
-                db.delete(emb)
-                logger.info(f"Embedding descartado por límite/baja calidad para identidad {observed_id}")
+                if emb is new_emb_model:
+                    # Si el nuevo embedding resulta no entrar en el top-K, no lo agregamos a DB
+                    logger.info(f"Embedding nuevo descartado por baja calidad relativa para identidad {observed_id}")
+                else:
+                    db.delete(emb)
+                    logger.info(f"Embedding antiguo descartado por límite de retención para identidad {observed_id}")
+
+        if new_emb_model and new_emb_model in embeddings_to_keep:
+            db.add(new_emb_model)
+            logger.info(f"Embedding agregado a galería observada para identidad {observed_id}")
 
         # 5. Actualizar Centroide (independiente de la política de retención)
         if settings.observed_identity_use_centroid and embeddings_to_keep:
