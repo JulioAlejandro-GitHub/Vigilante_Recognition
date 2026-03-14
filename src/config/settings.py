@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     enable_healthcheck: bool = Field(default=True, description="Habilita el monitor de salud en background")
     healthcheck_interval: int = Field(default=60, description="Intervalo en segundos para el healthcheck")
 
+    # Detección de Rostros
+    face_min_width: int = Field(default=30, description="Ancho mínimo del bounding box del rostro")
+    face_min_height: int = Field(default=30, description="Alto mínimo del bounding box del rostro")
+    face_padding_percent: float = Field(default=0.10, description="Porcentaje de padding para recortar el rostro")
+
     # Reconocimiento
     default_rtsp_port: int = Field(default=554, description="Puerto RTSP por defecto a usar si la cámara no lo especifica")
     insightface_threshold: float = Field(default=0.60, description="Umbral para coincidencia segura en InsightFace")

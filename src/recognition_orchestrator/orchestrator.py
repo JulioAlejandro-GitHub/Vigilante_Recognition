@@ -132,130 +132,186 @@ class RecognitionOrchestrator(threading.Thread):
             gallery = recognition_repository.get_combined_embeddings(db)
             logger.info(f"Galería combinada cargada con {len(gallery)} embeddings.")
 
-            # 5. Crear registro de rostro e invocar engines para cada detección
+            # 5. Crear registro de rostro e invocar engines para cada detección de persona
             face_count = 0
-            for face_idx, detection in enumerate(detections, start=1):
-                # Extraer bbox y unificar 'box' o 'bbox'
-                box_data = None
+            # detections son bboxes de personas
+            for person_idx, detection in enumerate(detections, start=1):
+                # Extraer bbox de la persona y unificar 'box' o 'bbox'
+                person_box = None
                 if isinstance(detection, dict):
-                    box_data = detection.get('box') or detection.get('bbox')
+                    person_box = detection.get('box') or detection.get('bbox')
                 elif hasattr(detection, 'xyxy'):
-                    box_data = detection.xyxy[0].tolist()
+                    person_box = detection.xyxy[0].tolist()
 
-                # Recortar el rostro del frame original usando el bbox
-                # Se agrega un margen de seguridad para no recortar la barbilla o frente
-                face_crop_img = frame_img
-                if box_data and len(box_data) >= 4:
-                    x1, y1, x2, y2 = map(int, box_data[:4])
-                    h, w = frame_img.shape[:2]
+                if not person_box or len(person_box) < 4:
+                    logger.warning(f"Bbox de persona inválido en la detección {person_idx}.")
+                    continue
 
-                    # Añadir padding del 10%
-                    pad_x = int((x2 - x1) * 0.1)
-                    pad_y = int((y2 - y1) * 0.1)
+                logger.info(f"Persona {person_idx} detectada. Procediendo a detección de rostros en su región.")
 
-                    x1 = max(0, x1 - pad_x)
-                    y1 = max(0, y1 - pad_y)
-                    x2 = min(w, x2 + pad_x)
-                    y2 = min(h, y2 + pad_y)
+                x1, y1, x2, y2 = map(int, person_box[:4])
+                h_frame, w_frame = frame_img.shape[:2]
 
-                    if x2 > x1 and y2 > y1:
-                        face_crop_img = frame_img[y1:y2, x1:x2]
+                # Asegurarnos de que el bbox de la persona esté dentro del frame
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(w_frame, x2)
+                y2 = min(h_frame, y2)
 
-                # Guardar crops
-                face_img_path = None
-                face_img_url = None
-                face_preview_path = None
-                face_preview_url = None
+                if x2 <= x1 or y2 <= y1:
+                    logger.warning(f"Bbox de persona {person_idx} vacío o fuera del frame. Se ignora.")
+                    continue
 
-                if face_crop_img is not None and face_crop_img.size > 0:
-                    face_img_path, face_img_url = storage_service.save_face_crop(
-                        job.camera_id, event.recognition_event_id, face_idx, job.timestamp, face_crop_img
-                    )
-                    face_preview_path, face_preview_url = storage_service.save_face_preview(
-                        job.camera_id, event.recognition_event_id, face_idx, job.timestamp, face_crop_img
-                    )
+                # Recortar la persona
+                person_crop_img = frame_img[y1:y2, x1:x2]
 
-                # Crear el registro del rostro en la BD
-                face = recognition_repository.create_face(
-                    db=db,
-                    event_id=event.recognition_event_id,
-                    face_index=face_idx,
-                    box=box_data,
-                    face_img=face_img_path,
-                    face_preview_img=face_preview_path,
-                    face_image_url=face_img_url,
-                    face_preview_url=face_preview_url
-                )
-                face_id = face.recognition_face_id
+                # Detectar rostros explícitamente dentro del person_crop
+                # Se podría pasar todo el frame, pero al recortar a la persona aseguramos
+                # que estamos analizando al sujeto detectado por YOLO
+                faces = insightface_service.detect_faces(person_crop_img)
 
-                # Ejecutar InsightFace como motor principal
-                insight_result = insightface_service.process_face(face_crop_img, gallery)
-                recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
-                logger.info(f"Resultado InsightFace: {insight_result.detected_human}, Similaridad: {insight_result.similarity}")
+                if not faces:
+                    logger.info(f"No se detectaron rostros para la persona {person_idx} (1 persona / 0 rostros). No se forzará reconocimiento falso.")
+                    continue
 
-                final_decision = insight_result
+                if len(faces) == 1:
+                    logger.info(f"Se detectó 1 rostro válido para la persona {person_idx}.")
+                else:
+                    logger.info(f"Se detectaron {len(faces)} rostros para la persona {person_idx}. Se procesarán todos (soporte para múltiples rostros).")
 
-                # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad)
-                if insight_result.detected_human and insight_result.similarity is not None:
-                    sim = insight_result.similarity
-                    if settings.insightface_ambiguous_threshold <= sim < settings.known_person_threshold:
-                        logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
-                        deep_result = deepface_service.process_face(face_crop_img, gallery)
-                        recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
-                        logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
+                # Procesar cada rostro encontrado en el bbox de la persona
+                for sub_face_idx, face_obj in enumerate(faces, start=1):
+                    # El bbox devuelto por InsightFace está relativo al person_crop_img
+                    # Lo mapeamos al frame original para guardarlo si es necesario
+                    face_box = face_obj.bbox.tolist()
+                    fx1, fy1, fx2, fy2 = map(int, face_box[:4])
 
-                        if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
-                            final_decision = deep_result
-                            logger.info("DeepFace ha confirmado la identidad.")
-                        else:
-                            logger.info("DeepFace tampoco pudo confirmar contundentemente.")
+                    face_w = fx2 - fx1
+                    face_h = fy2 - fy1
 
-                # Reglas de decisión:
-                # 1. Match con persona conocida
-                match_known = False
-                match_observed = False
+                    if face_w < settings.face_min_width or face_h < settings.face_min_height:
+                        logger.warning(f"Bbox facial ({face_w}x{face_h}) menor al mínimo permitido ({settings.face_min_width}x{settings.face_min_height}). Se descarta el rostro.")
+                        continue
 
-                # Check known
-                if final_decision.candidate_persona_id and final_decision.raw_response and \
-                   final_decision.raw_response.get("sim_persona", 0) >= settings.known_person_threshold:
-                    match_known = True
-                    logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id}")
-                    recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
+                    # Aplicar padding al rostro
+                    pad_x = int(face_w * settings.face_padding_percent)
+                    pad_y = int(face_h * settings.face_padding_percent)
 
-                # 2. Match con identidad observada
-                if not match_known and settings.enable_observed_reid and final_decision.candidate_observed_id and \
-                   final_decision.raw_response and final_decision.raw_response.get("sim_observed", 0) >= settings.observed_identity_threshold:
-                    match_observed = True
-                    logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
-                    recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed")
-                    # Actualizar last_seen y times_seen de la identidad
-                    recognition_repository.update_observed_identity(
-                        db=db,
-                        observed_id=final_decision.candidate_observed_id,
-                        camera_id=job.camera_id,
-                        timestamp=job.timestamp,
-                        face_id=face_id,
-                        image_url=face.face_image_url
-                    )
+                    # Coordenadas relativas al person crop con padding
+                    c_fx1 = max(0, fx1 - pad_x)
+                    c_fy1 = max(0, fy1 - pad_y)
+                    c_fx2 = min(person_crop_img.shape[1], fx2 + pad_x)
+                    c_fy2 = min(person_crop_img.shape[0], fy2 + pad_y)
 
-                # 3. Completamente nuevo: Crear nueva identidad observada
-                if not match_known and not match_observed and settings.enable_observed_reid:
-                    # Validar calidad mínima
-                    det_score = final_decision.raw_response.get("det_score") if final_decision.raw_response else None
-                    if det_score is not None and float(det_score) >= settings.observed_identity_min_quality:
-                        logger.info("Creando nueva identidad observada...")
-                        new_observed = recognition_repository.create_observed_identity(
-                            db=db,
-                            camera_id=job.camera_id,
-                            face_id=face_id,
-                            image_url=face.face_image_url
+                    if c_fx2 <= c_fx1 or c_fy2 <= c_fy1:
+                        logger.warning(f"Crop facial vacío o inválido. Se descarta.")
+                        continue
+
+                    face_crop_img = person_crop_img[c_fy1:c_fy2, c_fx1:c_fx2]
+
+                    # Mapear el bbox con padding al frame original para la BD
+                    global_box = [x1 + c_fx1, y1 + c_fy1, x1 + c_fx2, y1 + c_fy2]
+
+                    face_count += 1
+
+                    # Guardar crops usando el face_crop REAL
+                    face_img_path = None
+                    face_img_url = None
+                    face_preview_path = None
+                    face_preview_url = None
+
+                    if face_crop_img is not None and face_crop_img.size > 0:
+                        face_img_path, face_img_url = storage_service.save_face_crop(
+                            job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
                         )
-                        recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
-                        recognition_repository.create_observed_embedding(db, new_observed.observed_identity_id, face_id, final_decision)
-                    else:
-                        logger.info("Rostro descartado para nueva identidad observada por baja calidad.")
+                        face_preview_path, face_preview_url = storage_service.save_face_preview(
+                            job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
+                        )
 
-                face_count += 1
+                    # Crear el registro del rostro en la BD
+                    face_record = recognition_repository.create_face(
+                        db=db,
+                        event_id=event.recognition_event_id,
+                        face_index=face_count,
+                        box=global_box,
+                        face_img=face_img_path,
+                        face_preview_img=face_preview_path,
+                        face_image_url=face_img_url,
+                        face_preview_url=face_preview_url
+                    )
+                    face_id = face_record.recognition_face_id
+
+                    # Ejecutar InsightFace como motor principal sobre el crop del rostro real
+                    insight_result = insightface_service.process_face(face_crop_img, gallery)
+                    recognition_repository.save_recognition_engine_result(db, face_id, insight_result)
+
+                    if not insight_result.detected_human:
+                        logger.warning(f"InsightFace falló al extraer embedding del rostro {face_count} a pesar de haberlo detectado previamente.")
+                        continue
+
+                    logger.info(f"Resultado InsightFace - Rostro {face_count}: Similaridad: {insight_result.similarity}")
+
+                    final_decision = insight_result
+
+                    # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad)
+                    if insight_result.similarity is not None:
+                        sim = insight_result.similarity
+                        if settings.insightface_ambiguous_threshold <= sim < settings.known_person_threshold:
+                            logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
+                            deep_result = deepface_service.process_face(face_crop_img, gallery)
+                            recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
+                            logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
+
+                            if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
+                                final_decision = deep_result
+                                logger.info("DeepFace ha confirmado la identidad.")
+                            else:
+                                logger.info("DeepFace tampoco pudo confirmar contundentemente.")
+
+                    # Reglas de decisión:
+                    # 1. Match con persona conocida
+                    match_known = False
+                    match_observed = False
+
+                    # Check known
+                    if final_decision.candidate_persona_id and final_decision.raw_response and \
+                       final_decision.raw_response.get("sim_persona", 0) >= settings.known_person_threshold:
+                        match_known = True
+                        logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id}")
+                        recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
+
+                    # 2. Match con identidad observada
+                    if not match_known and settings.enable_observed_reid and final_decision.candidate_observed_id and \
+                       final_decision.raw_response and final_decision.raw_response.get("sim_observed", 0) >= settings.observed_identity_threshold:
+                        match_observed = True
+                        logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
+                        recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed")
+                        # Actualizar last_seen y times_seen de la identidad
+                        recognition_repository.update_observed_identity(
+                            db=db,
+                            observed_id=final_decision.candidate_observed_id,
+                            camera_id=job.camera_id,
+                            timestamp=job.timestamp,
+                            face_id=face_id,
+                            image_url=face_record.face_image_url
+                        )
+
+                    # 3. Completamente nuevo: Crear nueva identidad observada
+                    if not match_known and not match_observed and settings.enable_observed_reid:
+                        # Validar calidad mínima
+                        det_score = final_decision.raw_response.get("det_score") if final_decision.raw_response else None
+                        if det_score is not None and float(det_score) >= settings.observed_identity_min_quality:
+                            logger.info("Creando nueva identidad observada...")
+                            new_observed = recognition_repository.create_observed_identity(
+                                db=db,
+                                camera_id=job.camera_id,
+                                face_id=face_id,
+                                image_url=face_record.face_image_url
+                            )
+                            recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
+                            recognition_repository.create_observed_embedding(db, new_observed.observed_identity_id, face_id, final_decision)
+                        else:
+                            logger.info("Rostro descartado para nueva identidad observada por baja calidad.")
 
             logger.info(f"Se crearon {face_count} registros de rostros para el evento {event.recognition_event_id}.")
 

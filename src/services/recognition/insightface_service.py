@@ -21,6 +21,19 @@ class InsightFaceService(RecognitionEngineInterface):
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         logger.info("InsightFace inicializado correctamente")
 
+    def detect_faces(self, img: np.ndarray) -> List[Any]:
+        """
+        Realiza solo la detección de rostros en la imagen proporcionada.
+        Devuelve una lista de objetos Face detectados.
+        """
+        if self.app is None:
+            raise RuntimeError("InsightFace no ha sido inicializado. Llama a initialize() primero.")
+
+        start_time = time.time()
+        faces = self.app.get(img)
+        logger.debug(f"InsightFace detectó {len(faces)} rostro(s) en {int((time.time() - start_time) * 1000)}ms")
+        return faces
+
     def _cosine_similarity(self, embed1: np.ndarray, embed2: np.ndarray) -> float:
         """Calcula la similitud coseno entre dos embeddings"""
         return np.dot(embed1, embed2) / (np.linalg.norm(embed1) * np.linalg.norm(embed2))
