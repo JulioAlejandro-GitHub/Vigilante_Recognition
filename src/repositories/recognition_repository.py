@@ -114,11 +114,24 @@ class RecognitionRepository:
         ).all()
 
         # 2. Obtener embeddings de identidades observadas activas
-        observed_embeddings = db.query(ObservedIdentityEmbeddingModel, ObservedIdentityModel).join(
+        query = db.query(ObservedIdentityEmbeddingModel, ObservedIdentityModel).join(
             ObservedIdentityModel, ObservedIdentityModel.observed_identity_id == ObservedIdentityEmbeddingModel.observed_identity_id
         ).filter(
             ObservedIdentityModel.status == ObservedStatusEnum.ACTIVE
-        ).all()
+        )
+
+        match_mode = settings.observed_identity_match_mode
+        if match_mode == "centroid":
+            query = query.filter(ObservedIdentityEmbeddingModel.is_centroid == True)
+        elif match_mode == "topk":
+            query = query.filter(ObservedIdentityEmbeddingModel.is_representative == True)
+        elif match_mode == "centroid_plus_topk":
+            query = query.filter(
+                (ObservedIdentityEmbeddingModel.is_centroid == True) |
+                (ObservedIdentityEmbeddingModel.is_representative == True)
+            )
+
+        observed_embeddings = query.all()
 
         gallery = []
         for emb in persona_embeddings:
@@ -290,21 +303,105 @@ class RecognitionRepository:
         db.refresh(observed)
         return observed
 
-    def create_observed_embedding(self, db: Session, observed_id: int, face_id: int, result: EngineResultContract) -> ObservedIdentityEmbeddingModel:
-        """Guarda un nuevo embedding para una identidad observada."""
-        emb = ObservedIdentityEmbeddingModel(
-            observed_identity_id=observed_id,
-            recognition_face_id=face_id,
-            engine=result.engine,
-            model_name=result.model_name,
-            embedding_vector=result.embedding,
-            embedding_dim=result.embedding_dim,
-            quality_score=result.raw_response.get("det_score") if result.raw_response else None,
-            is_representative=True # Por simplificar, el nuevo siempre es representativo o podríamos manejar lógica de máximo
-        )
-        db.add(emb)
+    def update_observed_identity_gallery(self, db: Session, observed_id: int, face_id: int, result: EngineResultContract, quality_score: float) -> Optional[ObservedIdentityEmbeddingModel]:
+        """Actualiza la galería operacional para una identidad observada."""
+        import numpy as np
+
+        # 1. Obtener embeddings existentes para este motor (excluyendo centroide por ahora)
+        existing_embeddings = db.query(ObservedIdentityEmbeddingModel).filter(
+            ObservedIdentityEmbeddingModel.observed_identity_id == observed_id,
+            ObservedIdentityEmbeddingModel.engine == result.engine,
+            ObservedIdentityEmbeddingModel.is_centroid == False
+        ).all()
+
+        new_embedding = np.array(result.embedding, dtype=np.float32)
+
+        # 2. Control de duplicidad (Similarity Threshold)
+        is_duplicate = False
+        for emp in existing_embeddings:
+            emp_vector = np.array(emp.embedding_vector, dtype=np.float32)
+            similarity = np.dot(new_embedding, emp_vector) / (np.linalg.norm(new_embedding) * np.linalg.norm(emp_vector))
+            if similarity >= settings.observed_identity_duplicate_similarity_threshold:
+                is_duplicate = True
+                logger.info(f"Embedding descartado por redundancia para identidad observada {observed_id} (sim: {similarity:.4f})")
+                break
+
+        new_emb_model = None
+        if not is_duplicate:
+            # 3. Insertar el nuevo embedding
+            new_emb_model = ObservedIdentityEmbeddingModel(
+                observed_identity_id=observed_id,
+                recognition_face_id=face_id,
+                engine=result.engine,
+                model_name=result.model_name,
+                embedding_vector=result.embedding,
+                embedding_dim=result.embedding_dim,
+                quality_score=quality_score,
+                is_representative=False
+            )
+            db.add(new_emb_model)
+            existing_embeddings.append(new_emb_model)
+            logger.info(f"Embedding agregado a galería observada para identidad {observed_id}")
+
+        embeddings_to_keep = existing_embeddings
+        embeddings_to_delete = []
+
+        # 4. Seleccionar top-K embeddings representativos y aplicar límites
+        if settings.observed_identity_representative_policy == "best_quality":
+            # Ordenar por calidad descendente
+            existing_embeddings.sort(key=lambda x: float(x.quality_score) if x.quality_score else 0.0, reverse=True)
+
+            # Mantener máximo K embeddings
+            max_embeddings = settings.observed_identity_max_embeddings
+            embeddings_to_keep = existing_embeddings[:max_embeddings]
+            embeddings_to_delete = existing_embeddings[max_embeddings:]
+
+            # Marcar representativos (por simplificar, los mantenidos son todos representativos,
+            # o se podría marcar solo los primeros si K es grande)
+            for emb in embeddings_to_keep:
+                emb.is_representative = True
+
+            for emb in embeddings_to_delete:
+                db.delete(emb)
+                logger.info(f"Embedding descartado por límite/baja calidad para identidad {observed_id}")
+
+        # 5. Actualizar Centroide (independiente de la política de retención)
+        if settings.observed_identity_use_centroid and embeddings_to_keep:
+            vectors = [np.array(e.embedding_vector, dtype=np.float32) for e in embeddings_to_keep]
+            centroid = np.mean(vectors, axis=0)
+            centroid = centroid / np.linalg.norm(centroid) # Normalizar
+
+            centroid_record = db.query(ObservedIdentityEmbeddingModel).filter(
+                ObservedIdentityEmbeddingModel.observed_identity_id == observed_id,
+                ObservedIdentityEmbeddingModel.engine == result.engine,
+                ObservedIdentityEmbeddingModel.is_centroid == True
+            ).first()
+
+            if not centroid_record:
+                centroid_record = ObservedIdentityEmbeddingModel(
+                    observed_identity_id=observed_id,
+                    recognition_face_id=embeddings_to_keep[0].recognition_face_id,
+                    engine=result.engine,
+                    model_name=result.model_name,
+                    embedding_vector=centroid.tolist(),
+                    embedding_dim=result.embedding_dim,
+                    quality_score=None,
+                    is_representative=False,
+                    is_centroid=True
+                )
+                db.add(centroid_record)
+            else:
+                centroid_record.embedding_vector = centroid.tolist()
+
+            logger.info(f"Centroide recalculado para identidad {observed_id}")
+
         db.commit()
-        db.refresh(emb)
-        return emb
+
+        # Evitar hacer db.refresh en un objeto que ha sido eliminado (expunged)
+        if new_emb_model and new_emb_model not in embeddings_to_delete:
+            db.refresh(new_emb_model)
+            return new_emb_model
+
+        return None
 
 recognition_repository = RecognitionRepository()

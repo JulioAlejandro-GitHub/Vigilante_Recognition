@@ -309,6 +309,7 @@ CREATE TABLE `observed_identity_embedding` (
   `embedding_dim` smallint DEFAULT NULL,
   `quality_score` decimal(10,6) DEFAULT NULL,
   `is_representative` tinyint(1) NOT NULL DEFAULT '0',
+  `is_centroid` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`observed_identity_embedding_id`),
   KEY `idx_observed_identity_embedding_observed_identity` (`observed_identity_id`),

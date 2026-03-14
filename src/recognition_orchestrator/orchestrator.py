@@ -339,7 +339,8 @@ class RecognitionOrchestrator(threading.Thread):
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed", observed_label=obs_label)
 
                         # Actualizar last_seen y times_seen de la identidad solo si la calidad lo permite
-                        if quality_metrics.get("quality_score", 0.0) >= settings.min_quality_score_for_identity_update:
+                        quality_score = quality_metrics.get("quality_score", 0.0)
+                        if quality_score >= settings.min_quality_score_for_identity_update:
                             recognition_repository.update_observed_identity(
                                 db=db,
                                 observed_id=final_decision.candidate_observed_id,
@@ -348,6 +349,16 @@ class RecognitionOrchestrator(threading.Thread):
                                 face_id=face_id,
                                 image_url=face_record.face_image_url
                             )
+                            # Actualizar galería operacional si supera el umbral estricto
+                            if quality_score >= settings.observed_identity_min_quality:
+                                logger.info(f"Actualizando galería de observados para la identidad {final_decision.candidate_observed_id}...")
+                                recognition_repository.update_observed_identity_gallery(
+                                    db=db,
+                                    observed_id=final_decision.candidate_observed_id,
+                                    face_id=face_id,
+                                    result=final_decision,
+                                    quality_score=quality_score
+                                )
                         else:
                             logger.info("Evitando actualizar identidad observada debido a baja calidad facial del rostro.")
 
@@ -356,7 +367,7 @@ class RecognitionOrchestrator(threading.Thread):
                         # Validar calidad mínima global en vez del det_score nada más
                         quality_score = quality_metrics.get("quality_score", 0.0)
                         if quality_score >= settings.min_quality_score_for_identity_update:
-                            logger.info("Creando nueva identidad observada...")
+                            logger.info("Creando nueva identidad observada por ausencia de match...")
                             new_observed = recognition_repository.create_observed_identity(
                                 db=db,
                                 camera_id=job.camera_id,
@@ -364,7 +375,18 @@ class RecognitionOrchestrator(threading.Thread):
                                 image_url=face_record.face_image_url
                             )
                             recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
-                            recognition_repository.create_observed_embedding(db, new_observed.observed_identity_id, face_id, final_decision)
+
+                            # Poblar la galería operacional por primera vez
+                            if quality_score >= settings.observed_identity_min_quality:
+                                recognition_repository.update_observed_identity_gallery(
+                                    db=db,
+                                    observed_id=new_observed.observed_identity_id,
+                                    face_id=face_id,
+                                    result=final_decision,
+                                    quality_score=quality_score
+                                )
+                            else:
+                                logger.warning("La identidad observada se creó, pero la calidad no alcanzó para entrar a la galería de embeddings.")
                         else:
                             logger.info("Rostro descartado para nueva identidad observada por baja calidad.")
 

@@ -127,6 +127,7 @@ class ObservedIdentityEmbeddingModel(Base):
     embedding_dim = Column(SmallInteger, nullable=True)
     quality_score = Column(Numeric(10, 6), nullable=True)
     is_representative = Column(Boolean, nullable=False, default=False)
+    is_centroid = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     observed_identity = relationship("ObservedIdentityModel", back_populates="embeddings")
