@@ -78,6 +78,11 @@ class ProcessingStatusEnum(str, Enum):
     OK = 'ok'
     SIN_ROSTRO = 'sin_rostro'
     ERROR = 'error'
+    INVALID_FACE_CROP = 'invalid_face_crop'
+    MISSING_FACE_BBOX = 'missing_face_bbox'
+    EMPTY_FACE_CROP = 'empty_face_crop'
+    FACE_CROP_OUT_OF_BOUNDS = 'face_crop_out_of_bounds'
+    FACE_TOO_SMALL = 'face_too_small'
 
 class FinalLabelEnum(str, Enum):
     DESCONOCIDO = 'desconocido'

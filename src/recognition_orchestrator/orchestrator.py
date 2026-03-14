@@ -172,6 +172,7 @@ class RecognitionOrchestrator(threading.Thread):
 
                 if not faces:
                     logger.info(f"No se detectaron rostros para la persona {person_idx} (1 persona / 0 rostros). No se forzará reconocimiento falso.")
+                    recognition_repository.update_event_processing_status(db, event.recognition_event_id, ProcessingStatusEnum.SIN_ROSTRO)
                     continue
 
                 if len(faces) == 1:
@@ -191,6 +192,7 @@ class RecognitionOrchestrator(threading.Thread):
 
                     if face_w < settings.face_min_width or face_h < settings.face_min_height:
                         logger.warning(f"Bbox facial ({face_w}x{face_h}) menor al mínimo permitido ({settings.face_min_width}x{settings.face_min_height}). Se descarta el rostro.")
+                        recognition_repository.update_event_processing_status(db, event.recognition_event_id, ProcessingStatusEnum.FACE_TOO_SMALL)
                         continue
 
                     # Aplicar padding al rostro
@@ -204,10 +206,16 @@ class RecognitionOrchestrator(threading.Thread):
                     c_fy2 = min(person_crop_img.shape[0], fy2 + pad_y)
 
                     if c_fx2 <= c_fx1 or c_fy2 <= c_fy1:
-                        logger.warning(f"Crop facial vacío o inválido. Se descarta.")
+                        logger.warning(f"Crop facial vacío o fuera de rango. Se descarta.")
+                        recognition_repository.update_event_processing_status(db, event.recognition_event_id, ProcessingStatusEnum.FACE_CROP_OUT_OF_BOUNDS)
                         continue
 
                     face_crop_img = person_crop_img[c_fy1:c_fy2, c_fx1:c_fx2]
+
+                    if face_crop_img is None or face_crop_img.size == 0:
+                        logger.warning(f"Crop facial vacío o inválido. Se descarta.")
+                        recognition_repository.update_event_processing_status(db, event.recognition_event_id, ProcessingStatusEnum.EMPTY_FACE_CROP)
+                        continue
 
                     # Mapear el bbox con padding al frame original para la BD
                     global_box = [x1 + c_fx1, y1 + c_fy1, x1 + c_fx2, y1 + c_fy2]
@@ -220,13 +228,12 @@ class RecognitionOrchestrator(threading.Thread):
                     face_preview_path = None
                     face_preview_url = None
 
-                    if face_crop_img is not None and face_crop_img.size > 0:
-                        face_img_path, face_img_url = storage_service.save_face_crop(
-                            job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
-                        )
-                        face_preview_path, face_preview_url = storage_service.save_face_preview(
-                            job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
-                        )
+                    face_img_path, face_img_url = storage_service.save_face_crop(
+                        job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
+                    )
+                    face_preview_path, face_preview_url = storage_service.save_face_preview(
+                        job.camera_id, event.recognition_event_id, face_count, job.timestamp, face_crop_img
+                    )
 
                     # Crear el registro del rostro en la BD
                     face_record = recognition_repository.create_face(

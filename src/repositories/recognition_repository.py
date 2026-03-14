@@ -65,6 +65,14 @@ class RecognitionRepository:
             db.commit()
             db.refresh(event)
 
+    def update_event_processing_status(self, db: Session, event_id: int, status: ProcessingStatusEnum) -> None:
+        """Actualiza el estado de procesamiento del evento."""
+        event = db.query(RecognitionEventModel).filter(RecognitionEventModel.recognition_event_id == event_id).first()
+        if event:
+            event.processing_status = status
+            db.commit()
+            db.refresh(event)
+
     def create_face(self, db: Session, event_id: int, face_index: int = 1, box: Optional[Dict] = None,
                     face_img: Optional[str] = None, face_preview_img: Optional[str] = None,
                     face_image_url: Optional[str] = None, face_preview_url: Optional[str] = None) -> RecognitionFaceModel:
