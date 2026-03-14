@@ -489,6 +489,8 @@ CREATE TABLE `recognition_event` (
 
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
+-- Vigilante_2.recognition_face definition
+
 CREATE TABLE `recognition_face` (
   `recognition_face_id` bigint NOT NULL AUTO_INCREMENT,
   `recognition_event_id` bigint NOT NULL,
@@ -498,8 +500,15 @@ CREATE TABLE `recognition_face` (
   `face_image_url` varchar(1024) DEFAULT NULL,
   `face_preview_url` varchar(1024) DEFAULT NULL,
   `box` json DEFAULT NULL,
+  `face_width` smallint DEFAULT NULL,
+  `face_height` smallint DEFAULT NULL,
+  `blur_score` decimal(10,6) DEFAULT NULL,
+  `face_detector_score` decimal(10,6) DEFAULT NULL,
+  `pose_score` decimal(10,6) DEFAULT NULL,
+  `occlusion_score` decimal(10,6) DEFAULT NULL,
   `perfil` enum('front','left','right','top','undetected') NOT NULL DEFAULT 'undetected',
   `quality_score` decimal(10,6) DEFAULT NULL,
+  `discard_reason` varchar(255) DEFAULT NULL,
   `human_score` decimal(10,6) DEFAULT NULL,
   `final_label` enum('desconocido','identificado','ladron','rechazado','revisar') NOT NULL DEFAULT 'desconocido',
   `estado_validacion` enum('valido','por_validar','invalido') NOT NULL DEFAULT 'por_validar',
@@ -524,7 +533,7 @@ CREATE TABLE `recognition_face` (
   CONSTRAINT `fk_recognition_face_observed_identity` FOREIGN KEY (`observed_identity_id`) REFERENCES `observed_identity` (`observed_identity_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_recognition_face_operador` FOREIGN KEY (`reviewed_by_operador_id`) REFERENCES `operador` (`operador_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_recognition_face_persona` FOREIGN KEY (`assigned_persona_id`) REFERENCES `persona` (`persona_id`) ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=1675 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=1979 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -823,3 +832,126 @@ SET @@SESSION.SQL_LOG_BIN = @MYSQLDUMP_TEMP_LOG_BIN;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
 -- Dump completed on 2026-03-13 12:32:19
+
+
+
+
+-- Vigilante_2.view_event_main_image source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`view_event_main_image` AS
+select
+    `vigilante_2`.`storage_object`.`recognition_event_id` AS `recognition_event_id`,
+    max(`vigilante_2`.`storage_object`.`public_url`) AS `frame_image_url`,
+    max(`vigilante_2`.`storage_object`.`created_at`) AS `last_updated`
+from
+    `vigilante_2`.`storage_object`
+where
+    ((`vigilante_2`.`storage_object`.`image_kind` = 'frame_full')
+        and (`vigilante_2`.`storage_object`.`recognition_event_id` is not null))
+group by
+    `vigilante_2`.`storage_object`.`recognition_event_id`;
+
+
+
+-- Vigilante_2.view_face_crop source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`view_face_crop` AS
+select
+    `vigilante_2`.`storage_object`.`recognition_face_id` AS `recognition_face_id`,
+    max(`vigilante_2`.`storage_object`.`public_url`) AS `face_image_url`,
+    max(`vigilante_2`.`storage_object`.`created_at`) AS `last_updated`
+from
+    `vigilante_2`.`storage_object`
+where
+    ((`vigilante_2`.`storage_object`.`image_kind` = 'face_crop')
+        and (`vigilante_2`.`storage_object`.`recognition_face_id` is not null))
+group by
+    `vigilante_2`.`storage_object`.`recognition_face_id`;
+
+
+-- Vigilante_2.view_face_preview source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`view_face_preview` AS
+select
+    `vigilante_2`.`storage_object`.`recognition_face_id` AS `recognition_face_id`,
+    max(`vigilante_2`.`storage_object`.`public_url`) AS `face_preview_url`,
+    max(`vigilante_2`.`storage_object`.`created_at`) AS `last_updated`
+from
+    `vigilante_2`.`storage_object`
+where
+    ((`vigilante_2`.`storage_object`.`image_kind` = 'face_preview')
+        and (`vigilante_2`.`storage_object`.`recognition_face_id` is not null))
+group by
+    `vigilante_2`.`storage_object`.`recognition_face_id`;
+
+-- Vigilante_2.vw_observed_identity_summary source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`vw_observed_identity_summary` AS
+select
+    `oi`.`observed_identity_id` AS `id`,
+    `oi`.`status` AS `status`,
+    `oi`.`first_seen_at` AS `first_seen_at`,
+    `oi`.`last_seen_at` AS `last_seen_at`,
+    `oi`.`times_seen` AS `times_seen`,
+    `oi`.`last_camera_id` AS `last_camera_id`,
+    `c`.`nombre` AS `last_camera_nombre`,
+    `oi`.`best_face_image_url` AS `best_face_image_url`,
+    `oi`.`promoted_persona_id` AS `promoted_persona_id`
+from
+    (`vigilante_2`.`observed_identity` `oi`
+left join `vigilante_2`.`camara` `c` on
+    ((`c`.`camara_id` = `oi`.`last_camera_id`)));
+
+
+-- Vigilante_2.vw_recognition_engine_best_match source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`vw_recognition_engine_best_match` AS
+select
+    `rer`.`recognition_face_id` AS `recognition_face_id`,
+    `rer`.`engine` AS `engine`,
+    `rer`.`similarity` AS `similarity`,
+    `rer`.`candidate_persona_id` AS `candidate_persona_id`,
+    `rer`.`candidate_persona_embedding_id` AS `candidate_persona_embedding_id`,
+    `rer`.`model_name` AS `model_name`,
+    `rer`.`model_version` AS `model_version`,
+    `rer`.`created_at` AS `created_at`
+from
+    `vigilante_2`.`recognition_engine_result` `rer`;
+
+
+-- Vigilante_2.vw_recognition_timeline source
+
+CREATE OR REPLACE
+ALGORITHM = UNDEFINED VIEW `vigilante_2`.`vw_recognition_timeline` AS
+select
+    `re`.`recognition_event_id` AS `recognition_event_id`,
+    `rf`.`recognition_face_id` AS `recognition_face_id`,
+    `re`.`local_id` AS `local_id`,
+    `re`.`camara_id` AS `camara_id`,
+    `re`.`occurred_at` AS `occurred_at`,
+    `rf`.`face_index` AS `face_index`,
+    `rf`.`face_img` AS `face_img`,
+    `rf`.`perfil` AS `perfil`,
+    `rf`.`final_label` AS `final_label`,
+    `rf`.`estado_validacion` AS `estado_validacion`,
+    `rf`.`best_similarity` AS `best_similarity`,
+    `rf`.`best_engine` AS `best_engine`,
+    `rf`.`assigned_status` AS `assigned_status`,
+    `rf`.`assigned_persona_id` AS `assigned_persona_id`,
+    `p`.`nombre` AS `persona_nombre`,
+    `p`.`tipo` AS `persona_tipo`,
+    `c`.`nombre` AS `camara_nombre`,
+    `c`.`ubicacion` AS `camara_ubicacion`
+from
+    (((`vigilante_2`.`recognition_event` `re`
+join `vigilante_2`.`recognition_face` `rf` on
+    ((`rf`.`recognition_event_id` = `re`.`recognition_event_id`)))
+join `vigilante_2`.`camara` `c` on
+    ((`c`.`camara_id` = `re`.`camara_id`)))
+left join `vigilante_2`.`persona` `p` on
+    ((`p`.`persona_id` = `rf`.`assigned_persona_id`)));
