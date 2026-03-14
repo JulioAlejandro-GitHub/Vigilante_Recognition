@@ -7,7 +7,9 @@ class EngineResultContract(BaseModel):
     model_name: Optional[str] = None
     model_version: Optional[str] = None
     detected_human: Optional[bool] = None
-    similarity: Optional[float] = None
+    similarity: Optional[float] = None  # Legacy or max sim
+    similarity_persona: Optional[float] = None
+    similarity_observed: Optional[float] = None
     candidate_persona_id: Optional[int] = None
     candidate_persona_embedding_id: Optional[int] = None
     candidate_observed_id: Optional[int] = None

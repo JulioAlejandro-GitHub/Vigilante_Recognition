@@ -83,6 +83,8 @@ class InsightFaceService(RecognitionEngineInterface):
             model_version="latest",
             detected_human=True,
             similarity=float(max_similarity) if max_similarity != -1.0 else None,
+            similarity_persona=float(best_similarity_persona) if best_similarity_persona != -1.0 else None,
+            similarity_observed=float(best_similarity_observed) if best_similarity_observed != -1.0 else None,
             candidate_persona_id=best_match_id,
             candidate_persona_embedding_id=best_embedding_id,
             candidate_observed_id=best_observed_id,

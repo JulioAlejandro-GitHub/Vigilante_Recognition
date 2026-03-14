@@ -30,6 +30,7 @@ class RecognitionOrchestrator(threading.Thread):
         self.queue = queue
         self.running = False
         self.daemon = True # Thread dies when main thread dies
+        self._cooldown_cache = {} # Mantiene último timestamp por (camera_id, type, id)
 
         # Inicializar motores (lazy loading en primer uso es posible, pero es mejor aquí)
         try:
@@ -58,6 +59,24 @@ class RecognitionOrchestrator(threading.Thread):
                 self.queue.task_done()
 
         logger.info("RecognitionOrchestrator detenido.")
+
+    def _is_in_cooldown(self, camera_id: int, identity_type: str, identity_id: int, current_timestamp: float) -> bool:
+        if not settings.enable_recognition_camera_suppression:
+            return False
+
+        cache_key = f"{camera_id}_{identity_type}_{identity_id}"
+        last_seen = self._cooldown_cache.get(cache_key, 0.0)
+
+        # Limpiar entradas antiguas periódicamente no está hecho explícitamente,
+        # pero para el thread de vida larga podríamos hacerlo, aunque no es crítico si el dict no crece infinitamente rápido.
+        # En una versión robusta se limpiaría el caché de vez en cuando.
+
+        if current_timestamp - last_seen < settings.recognition_camera_suppression_seconds:
+            return True
+
+        # Actualizar timestamp
+        self._cooldown_cache[cache_key] = current_timestamp
+        return False
 
     def _process_job(self, job):
         """
@@ -295,42 +314,57 @@ class RecognitionOrchestrator(threading.Thread):
 
                     final_decision = insight_result
 
-                    # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad)
-                    if insight_result.similarity is not None:
-                        sim = insight_result.similarity
-                        if settings.insightface_ambiguous_threshold <= sim < settings.known_person_threshold:
-                            logger.info("Resultado ambiguo de InsightFace. Ejecutando DeepFace como fallback...")
-                            deep_result = deepface_service.process_face(face_crop_img, gallery)
-                            recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
-                            logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad: {deep_result.similarity}")
+                    # Evaluar necesidad de DeepFace (Zona gris / Ambigüedad) SOLO PARA CONOCIDOS
+                    # Prioridad 1: Match con Persona Conocida
+                    sim_persona = insight_result.similarity_persona or -1.0
+                    if settings.insightface_ambiguous_threshold <= sim_persona < settings.known_person_threshold:
+                        logger.info(f"Resultado ambiguo de InsightFace para conocido (sim: {sim_persona:.4f}). Ejecutando DeepFace como fallback...")
+                        deep_result = deepface_service.process_face(face_crop_img, gallery)
+                        recognition_repository.save_recognition_engine_result(db, face_id, deep_result)
+                        logger.info(f"Resultado DeepFace: {deep_result.detected_human}, Similaridad Persona: {deep_result.similarity_persona}")
 
-                            if deep_result.similarity is not None and deep_result.similarity >= settings.deepface_threshold:
-                                final_decision = deep_result
-                                logger.info("DeepFace ha confirmado la identidad.")
-                            else:
-                                logger.info("DeepFace tampoco pudo confirmar contundentemente.")
+                        if deep_result.similarity_persona is not None and deep_result.similarity_persona >= settings.deepface_threshold:
+                            final_decision = deep_result
+                            logger.info("DeepFace ha confirmado la identidad de la persona conocida.")
+                        else:
+                            logger.info("DeepFace tampoco pudo confirmar contundentemente al conocido.")
 
-                    # Reglas de decisión:
-                    # 1. Match con persona conocida
+                    # Reglas de decisión explícitas y jerárquicas:
                     match_known = False
                     match_observed = False
+                    final_sim_persona = final_decision.similarity_persona or -1.0
+                    final_sim_observed = final_decision.similarity_observed or -1.0
+                    current_ts = time.time()
 
-                    # Check known
-                    if final_decision.candidate_persona_id and final_decision.raw_response and \
-                       final_decision.raw_response.get("sim_persona", 0) >= settings.known_person_threshold:
+                    # 1. Match con persona conocida
+                    if final_decision.candidate_persona_id and final_sim_persona >= settings.known_person_threshold:
                         match_known = True
-                        logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id}")
+                        logger.info(f"Match confirmado con persona conocida: {final_decision.candidate_persona_id} (sim: {final_sim_persona:.4f})")
+
+                        # Suprimir por cámara
+                        if self._is_in_cooldown(job.camera_id, "persona", final_decision.candidate_persona_id, current_ts):
+                            logger.info(f"Supresión por cámara activa para persona conocida {final_decision.candidate_persona_id}. Omitiendo BD.")
+                            # Igual asignamos el ID al rostro para no dejarlo huérfano en el evento, pero no hacemos alertas ni flujos pesados.
+                            recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
+                            continue
+
                         recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="persona")
 
                     # 2. Match con identidad observada
                     if not match_known and settings.enable_observed_identity and final_decision.candidate_observed_id and \
-                       final_decision.raw_response and final_decision.raw_response.get("sim_observed", 0) >= settings.observed_identity_threshold:
+                       final_sim_observed >= settings.observed_identity_threshold:
                         match_observed = True
-                        logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id}")
+                        logger.info(f"Match confirmado con identidad observada: {final_decision.candidate_observed_id} (sim: {final_sim_observed:.4f})")
 
-                        # Extraer label y risk desde raw_response que pasamos desde el servicio
-                        obs_label = final_decision.raw_response.get("observed_label", "unknown")
-                        obs_risk = final_decision.raw_response.get("observed_risk", "low")
+                        # Extraer label y risk
+                        obs_label = final_decision.raw_response.get("observed_label", "unknown") if final_decision.raw_response else "unknown"
+                        obs_risk = final_decision.raw_response.get("observed_risk", "low") if final_decision.raw_response else "low"
+
+                        # Suprimir por cámara
+                        if self._is_in_cooldown(job.camera_id, "observed", final_decision.candidate_observed_id, current_ts):
+                            logger.info(f"Supresión por cámara activa para identidad observada {final_decision.candidate_observed_id}. Omitiendo BD.")
+                            recognition_repository.update_face_with_best_match(db, face_id, final_decision, match_type="observed", observed_label=obs_label)
+                            continue
 
                         # ALERTA OPERATIVA si es relevante
                         if obs_label in ['ladron', 'sospechoso', 'persona_interes'] or obs_risk in ['high', 'critical']:
@@ -364,7 +398,6 @@ class RecognitionOrchestrator(threading.Thread):
 
                     # 3. Completamente nuevo: Crear nueva identidad observada
                     if not match_known and not match_observed and settings.enable_observed_identity:
-                        # Validar calidad mínima global en vez del det_score nada más
                         quality_score = quality_metrics.get("quality_score", 0.0)
                         if quality_score >= settings.min_quality_score_for_identity_update:
                             logger.info("Creando nueva identidad observada por ausencia de match...")
@@ -374,6 +407,10 @@ class RecognitionOrchestrator(threading.Thread):
                                 face_id=face_id,
                                 image_url=face_record.face_image_url
                             )
+
+                            # Registrar en cooldown usando el ID recién creado para evitar creaciones duplicadas casi instantáneas (aunque yolo agrupa detections)
+                            self._is_in_cooldown(job.camera_id, "observed", new_observed.observed_identity_id, current_ts)
+
                             recognition_repository.update_face_with_new_observed_identity(db, face_id, new_observed.observed_identity_id)
 
                             # Poblar la galería operacional por primera vez
