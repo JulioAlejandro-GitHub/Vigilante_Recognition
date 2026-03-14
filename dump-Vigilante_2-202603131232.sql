@@ -260,9 +260,14 @@ CREATE TABLE `empresa` (
 
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
+-- Vigilante_2.observed_identity definition
+
 CREATE TABLE `observed_identity` (
   `observed_identity_id` bigint NOT NULL AUTO_INCREMENT,
-  `status` enum('active','archived','merged','promoted') NOT NULL DEFAULT 'active',
+  `status` enum('active','archived','merged','promoted','expired') NOT NULL DEFAULT 'active',
+  `current_label` enum('unknown','observed','ladron','sospechoso','persona_interes','visitante','proveedor') NOT NULL DEFAULT 'unknown',
+  `risk_level` enum('low','medium','high','critical') NOT NULL DEFAULT 'low',
+  `alert_enabled` tinyint(1) NOT NULL DEFAULT '0',
   `display_label` varchar(150) DEFAULT NULL,
   `first_seen_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `last_seen_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -272,6 +277,8 @@ CREATE TABLE `observed_identity` (
   `best_face_image_url` varchar(1024) DEFAULT NULL,
   `notes` text,
   `promoted_persona_id` bigint DEFAULT NULL,
+  `retention_policy` varchar(50) DEFAULT NULL,
+  `expires_at` datetime DEFAULT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`observed_identity_id`),
@@ -283,7 +290,7 @@ CREATE TABLE `observed_identity` (
   CONSTRAINT `fk_observed_identity_best_recognition_face` FOREIGN KEY (`best_recognition_face_id`) REFERENCES `recognition_face` (`recognition_face_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_observed_identity_last_camera` FOREIGN KEY (`last_camera_id`) REFERENCES `camara` (`camara_id`) ON DELETE SET NULL ON UPDATE CASCADE,
   CONSTRAINT `fk_observed_identity_promoted_persona` FOREIGN KEY (`promoted_persona_id`) REFERENCES `persona` (`persona_id`) ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -955,3 +962,23 @@ join `vigilante_2`.`camara` `c` on
     ((`c`.`camara_id` = `re`.`camara_id`)))
 left join `vigilante_2`.`persona` `p` on
     ((`p`.`persona_id` = `rf`.`assigned_persona_id`)));
+
+
+
+-- 3. Actualizar vista resumen
+CREATE OR REPLACE VIEW `vw_observed_identity_summary` AS
+SELECT
+  oi.observed_identity_id AS id,
+  oi.status,
+  oi.current_label,
+  oi.risk_level,
+  oi.first_seen_at,
+  oi.last_seen_at,
+  oi.times_seen,
+  oi.last_camera_id,
+  c.nombre AS last_camera_nombre,
+  oi.best_face_image_url,
+  oi.promoted_persona_id,
+  oi.expires_at
+FROM `observed_identity` oi
+LEFT JOIN `camara` c ON c.camara_id = oi.last_camera_id;
