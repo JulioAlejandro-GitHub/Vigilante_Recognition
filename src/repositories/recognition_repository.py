@@ -81,7 +81,8 @@ class RecognitionRepository:
     def create_face(self, db: Session, event_id: int, face_index: int = 1, box: Optional[Dict] = None,
                     face_img: Optional[str] = None, face_preview_img: Optional[str] = None,
                     face_image_url: Optional[str] = None, face_preview_url: Optional[str] = None,
-                    quality_metrics: Optional[Dict[str, Any]] = None) -> RecognitionFaceModel:
+                    quality_metrics: Optional[Dict[str, Any]] = None,
+                    observed_identity_id: Optional[int] = None) -> RecognitionFaceModel:
         """Crea un registro de rostro detectado para un evento"""
         face = RecognitionFaceModel(
             recognition_event_id=event_id,
@@ -90,7 +91,8 @@ class RecognitionRepository:
             face_img=face_img,
             face_preview_img=face_preview_img,
             face_image_url=face_image_url,
-            face_preview_url=face_preview_url
+            face_preview_url=face_preview_url,
+            observed_identity_id=observed_identity_id
         )
 
         if quality_metrics:

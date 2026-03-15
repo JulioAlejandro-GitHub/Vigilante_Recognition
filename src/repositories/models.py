@@ -36,6 +36,7 @@ class RecognitionEventModel(Base):
     frame_metadata = Column(JSON, nullable=True)
     source_type = Column(SQLEnum(SourceTypeEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=SourceTypeEnum.CAMERA)
     processing_status = Column(SQLEnum(ProcessingStatusEnum, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=ProcessingStatusEnum.OK)
+    observed_identity_id = Column(BigInteger, ForeignKey("observed_identity.observed_identity_id"), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     solicitud = relationship("SolicitudRecognitionModel", back_populates="events")
@@ -51,6 +52,7 @@ class RecognitionFaceModel(Base):
     face_preview_img = Column(String(255), nullable=True)
     face_image_url = Column(String(1024), nullable=True)
     face_preview_url = Column(String(1024), nullable=True)
+    observed_identity_id = Column(BigInteger, ForeignKey("observed_identity.observed_identity_id"), nullable=True)
     box = Column(JSON, nullable=True)
     face_width = Column(SmallInteger, nullable=True)
     face_height = Column(SmallInteger, nullable=True)
@@ -188,3 +190,5 @@ class RecognitionEngineResultModel(Base):
     processing_ms = Column(Integer, nullable=True)
     raw_response = Column(JSON, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
